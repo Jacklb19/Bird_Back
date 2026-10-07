@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# Vercel y Supabase
+.vercel/
+supabase/.temp/
+
+# Secretos (nunca versionar)
+.env
+.env.*
+!.env.example
+
+# Sistema e IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*

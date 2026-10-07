@@ -1,0 +1,13 @@
+{
+  "model_id": "birdnet-v2.4",
+  "variant": "BirdNET_v2.4_int8_arm_dfttrunc.onnx",
+  "sample_rate": 48000,
+  "window_samples": 144000,
+  "window_seconds": 3.0,
+  "num_classes": 6522,
+  "sha256": "7550498ba996064feca12005ff4133eb1d35741c4061376e7a987d8227518893",
+  "size_bytes": 38727042,
+  "labels_file": "labels.txt",
+  "model_file": "birdnet_model.onnx",
+  "updated_at": "2026-09-29"
+}

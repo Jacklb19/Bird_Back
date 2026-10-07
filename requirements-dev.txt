@@ -1,0 +1,4 @@
+-r requirements.txt
+-c requirements-dev.lock.txt
+pytest==9.1.1
+uvicorn==0.54.0
