@@ -1,6 +1,7 @@
-"""Synchronization, collective map queries and the model manifest; verification arrives in S6."""
+"""Synchronization, map, monitoring sites, statistics, CSV export and the model manifest."""
 import json
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 from urllib.parse import urlparse
@@ -10,11 +11,12 @@ import httpx
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from .auth import authenticate
-from .contracts import AudioInput, BatchInput, BatchResponse, MapQuery, MapResponse
+from .contracts import PERIOD_DAYS, AudioInput, BatchInput, BatchResponse, ExportQuery, MapQuery, MapResponse, Site, SiteInput, SiteList, SiteStats, StatsQuery
 from .repository import DetectionRepository
+from .sites import SiteRepository
 from .storage import AudioStorage
 
 # Deployed as its own project: routes live at the root and the web app proxies /api/* here.
@@ -24,6 +26,14 @@ MANIFEST = Path(__file__).with_name("model_manifest.json")
 
 def repository() -> DetectionRepository:
     return DetectionRepository()
+
+
+def sites() -> SiteRepository:
+    return SiteRepository()
+
+
+def now() -> datetime:
+    return datetime.now(UTC)
 
 
 def storage() -> AudioStorage:
@@ -74,6 +84,33 @@ def detections(query: Annotated[MapQuery, Query()], viewer: UUID = Depends(authe
     if query.since and query.until and query.since >= query.until:
         raise HTTPException(422, "Invalid period")
     return repo.map(viewer, query)
+
+
+@app.get("/v1/sites", response_model=SiteList)
+def list_sites(owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> SiteList:
+    return SiteList(sites=repo.list_sites(owner))
+
+
+@app.post("/v1/sites", response_model=Site, status_code=201)
+def create_site(payload: SiteInput, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Site:
+    return repo.create_site(owner, payload)
+
+
+@app.get("/v1/sites/{site_id}/stats", response_model=SiteStats)
+def site_stats(site_id: UUID, query: Annotated[StatsQuery, Query()], owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites), current: datetime = Depends(now)) -> SiteStats:
+    days = PERIOD_DAYS[query.period]
+    since = current - timedelta(days=days) if days else None
+    previous = since - timedelta(days=days) if since and days else None
+    return repo.stats(owner, site_id, query.period, since, previous, current, query.tz)
+
+
+@app.get("/v1/export")
+def export(query: Annotated[ExportQuery, Query()], owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Response:
+    if query.since and query.until and query.since >= query.until:
+        raise HTTPException(422, "Invalid period")
+    body, truncated = repo.export_csv(owner, query.site_id, query.since, query.until)
+    headers = {"Content-Disposition": f'attachment; filename="birdnet-{query.site_id}.csv"', "X-Truncated": "true" if truncated else "false"}
+    return Response(content=body, media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @app.get("/v1/health")

@@ -38,12 +38,18 @@ class DetectionRepository:
         accepted: list[UUID] = []
         existing: list[UUID] = []
         with self.transaction(owner) as connection:
+            sites = list({row.site_id for row in detections if row.site_id})
+            if sites:
+                # A foreign site would pass the foreign key check; RLS on sites makes it invisible here.
+                visible = {r["id"] for r in connection.execute("SELECT id FROM public.sites WHERE id = ANY(%s)", (sites,)).fetchall()}
+                if visible != set(sites):
+                    raise HTTPException(422, "Unknown site")
             for row in detections:
                 inserted = connection.execute(
-                    """INSERT INTO public.detections (id,user_id,especie,confianza,estado,momento,ubicacion,version_modelo)
-                    VALUES (%s,%s,%s,%s,%s,%s,ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,%s)
+                    """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,momento,ubicacion,version_modelo)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,%s)
                     ON CONFLICT (id) DO NOTHING RETURNING id""",
-                    (row.id, owner, row.species, row.confidence, "confirmada" if row.status == "confirmed" else "provisional", row.recorded_at, row.location.longitude, row.location.latitude, row.model_version),
+                    (row.id, owner, row.site_id, row.species, row.confidence, "confirmada" if row.status == "confirmed" else "provisional", row.recorded_at, row.location.longitude, row.location.latitude, row.model_version),
                 ).fetchone()
                 owned = connection.execute("SELECT id, especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
                 if not owned or owned["especie"] != row.species or owned["version_modelo"] != row.model_version:
