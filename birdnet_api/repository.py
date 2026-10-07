@@ -1,36 +1,41 @@
 """Use one database transaction per batch; RLS remains active for every query."""
 import json
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any, Final
 from uuid import UUID
 
 import psycopg
-from fastapi import HTTPException
+from psycopg import sql
 from psycopg.rows import dict_row
 
+from .auth import AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM
 from .contracts import BatchResponse, DetectionInput, MapDetection, MapQuery, MapResponse
+from .domain import API_TO_DB_STATUS, DB_TO_API_STATUS, WGS84_SRID, DbDetectionStatus
+from .errors import ErrorCode, raise_error
+from .settings import get_settings
 
-MAP_LIMIT = 2000
-STATUS = {"confirmada": "confirmed", "provisional": "provisional", "verificada": "verified", "corregida": "corrected"}
+# Transaction-local setting that Supabase's auth.uid() reads, so RLS policies see the requesting user.
+JWT_CLAIMS_SETTING: Final = "request.jwt.claims"
 
 
 class DetectionRepository:
     @contextmanager
-    def transaction(self, owner: UUID) -> Iterator[psycopg.Connection]:
-        url = os.environ.get("DATABASE_URL")
-        if not url:
-            raise HTTPException(503, "Database is not configured")
+    def transaction(self, owner: UUID) -> Iterator[psycopg.Connection[dict[str, Any]]]:
+        settings = get_settings()
+        if not settings.database_url:
+            raise_error(ErrorCode.DATABASE_NOT_CONFIGURED)
         try:
             # Supabase's transaction pooler cannot keep server-side prepared statements.
-            with psycopg.connect(url, connect_timeout=10, row_factory=dict_row, prepare_threshold=None) as connection:
-                connection.execute("SET LOCAL ROLE authenticated")
-                connection.execute("SELECT set_config('request.jwt.claims', %s, true)", (json.dumps({"sub": str(owner), "role": "authenticated"}),))
+            with psycopg.connect(settings.database_url, connect_timeout=settings.database_connect_timeout_seconds, row_factory=dict_row, prepare_threshold=None) as connection:
+                connection.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(AUTHENTICATED_ROLE)))
+                claims = json.dumps({SUBJECT_CLAIM: str(owner), ROLE_CLAIM: AUTHENTICATED_ROLE})
+                connection.execute("SELECT set_config(%s, %s, true)", (JWT_CLAIMS_SETTING, claims))
                 yield connection
         except psycopg.Error:
-            raise HTTPException(503, "Database operation failed; retry later") from None
+            raise_error(ErrorCode.DATABASE_UNAVAILABLE)
 
-    def get_owned(self, owner: UUID, detection: UUID) -> dict | None:
+    def get_owned(self, owner: UUID, detection: UUID) -> dict[str, Any] | None:
         with self.transaction(owner) as connection:
             return connection.execute("SELECT id, estado FROM public.detections WHERE id = %s AND user_id = %s", (detection, owner)).fetchone()
 
@@ -43,43 +48,50 @@ class DetectionRepository:
                 # A foreign site would pass the foreign key check; RLS on sites makes it invisible here.
                 visible = {r["id"] for r in connection.execute("SELECT id FROM public.sites WHERE id = ANY(%s)", (sites,)).fetchall()}
                 if visible != set(sites):
-                    raise HTTPException(422, "Unknown site")
+                    raise_error(ErrorCode.UNKNOWN_SITE)
             for row in detections:
                 inserted = connection.execute(
                     """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,momento,ubicacion,version_modelo)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,%s)
+                    VALUES (%(id)s,%(owner)s,%(site)s,%(species)s,%(confidence)s,%(status)s,%(recorded_at)s,
+                        ST_SetSRID(ST_MakePoint(%(longitude)s,%(latitude)s),%(srid)s::integer)::geography,%(model_version)s)
                     ON CONFLICT (id) DO NOTHING RETURNING id""",
-                    (row.id, owner, row.site_id, row.species, row.confidence, "confirmada" if row.status == "confirmed" else "provisional", row.recorded_at, row.location.longitude, row.location.latitude, row.model_version),
+                    {"id": row.id, "owner": owner, "site": row.site_id, "species": row.species, "confidence": row.confidence,
+                     "status": API_TO_DB_STATUS[row.status].value, "recorded_at": row.recorded_at, "longitude": row.location.longitude,
+                     "latitude": row.location.latitude, "srid": WGS84_SRID, "model_version": row.model_version},
                 ).fetchone()
                 owned = connection.execute("SELECT id, especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
                 if not owned or owned["especie"] != row.species or owned["version_modelo"] != row.model_version:
-                    raise HTTPException(409, "Detection identifier conflict")
+                    raise_error(ErrorCode.DETECTION_ID_CONFLICT)
                 if row.audio_path:
                     if owned["ruta_audio"] not in (None, row.audio_path):
-                        raise HTTPException(409, "Audio identifier conflict")
+                        raise_error(ErrorCode.AUDIO_ID_CONFLICT)
                     connection.execute("UPDATE public.detections SET ruta_audio=%s WHERE id=%s AND user_id=%s", (row.audio_path, row.id, owner))
                     connection.execute("INSERT INTO public.verification_jobs(detection_id) VALUES (%s) ON CONFLICT (detection_id) DO NOTHING", (row.id,))
                 (accepted if inserted else existing).append(row.id)
         return BatchResponse(accepted_ids=accepted, existing_ids=existing)
 
     def map(self, viewer: UUID, query: MapQuery) -> MapResponse:
+        limit = get_settings().map_result_limit
         # Discarded detections stay private to their author; the map only shows usable indications.
         with self.transaction(viewer) as connection:
             rows = connection.execute(
                 """SELECT id, especie, confianza, estado, momento,
                     ST_Y(ubicacion::geometry) AS latitude, ST_X(ubicacion::geometry) AS longitude
                 FROM public.detections
-                WHERE estado <> 'descartada'
-                  AND ST_Intersects(ubicacion::geometry, ST_MakeEnvelope(%s, %s, %s, %s, 4326))
-                  AND (%s::text IS NULL OR especie = %s)
-                  AND (%s::timestamptz IS NULL OR momento >= %s)
-                  AND (%s::timestamptz IS NULL OR momento < %s)
-                ORDER BY momento DESC LIMIT %s""",
-                (query.west, query.south, query.east, query.north, query.species, query.species, query.since, query.since, query.until, query.until, MAP_LIMIT + 1),
+                WHERE estado <> %(discarded)s
+                  AND ST_Intersects(ubicacion::geometry, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
+                  AND (%(species)s::text IS NULL OR especie = %(species)s)
+                  AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR momento < %(until)s)
+                ORDER BY momento DESC LIMIT %(fetch)s""",
+                {"discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
+                 "north": query.north, "srid": WGS84_SRID, "species": query.species, "since": query.since, "until": query.until,
+                 # One extra row tells whether the result was cut at the limit.
+                 "fetch": limit + 1},
             ).fetchall()
         detections = [
-            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=STATUS[row["estado"]],
+            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=DB_TO_API_STATUS[row["estado"]],
                          recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"])
-            for row in rows[:MAP_LIMIT]
+            for row in rows[:limit]
         ]
-        return MapResponse(detections=detections, truncated=len(rows) > MAP_LIMIT)
+        return MapResponse(detections=detections, truncated=len(rows) > limit)

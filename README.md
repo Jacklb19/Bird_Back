@@ -15,10 +15,14 @@ API de BirdNet Local: FastAPI desplegada como función Python en Vercel, con Pos
 ## Estructura
 
 - `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorio y Storage).
+  - `settings.py`: configuración leída del entorno una sola vez y validada.
+  - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, formato WAV, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
+  - `errors.py`: catálogo de errores con su código HTTP y mensaje.
+  - `manifest.py`: carga del manifiesto del modelo (local o remoto desde los hosts permitidos).
 - `api/index.py`: punto de entrada de la función de Vercel.
 - `supabase/migrations/`: esquema de la base de datos (ejecutar en orden en el SQL Editor de Supabase).
 - `tests/`: pruebas con pytest; las de PostGIS usan una base local en Docker.
-- `scripts/lock-python.py`: regenera `requirements.txt` y `requirements-dev.lock.txt` desde `requirements.in`.
+- `scripts/lock-python.py`: regenera `requirements.txt` y `requirements-dev.lock.txt` desde `requirements.in` y `requirements-dev.txt`.
 
 ## Desarrollo local
 
@@ -39,3 +43,27 @@ BIRDNET_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55434/birdnet_s4_test 
 ## Despliegue
 
 Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.env.example` (`DATABASE_URL`, `SUPABASE_AUTH_ISSUER`, `MODEL_RESOURCE_BASE_URL` como mínimo).
+
+## Configuración
+
+`birdnet_api/settings.py` lee las variables una vez por proceso. Las de una función opcional (base de datos, autenticación, Storage, manifiesto remoto) pueden faltar: el endpoint que las necesita responde 503 «no configurado». Un valor mal formado detiene el arranque con un mensaje que nombra la variable y, si llega a leerse en una petición, se responde 503 y se registra el mensaje.
+
+| Variable | Uso | Por defecto |
+|---|---|---|
+| `DATABASE_URL` | Cadena del Transaction pooler de Supabase | — (503 al usar la base) |
+| `DATABASE_CONNECT_TIMEOUT_SECONDS` | Espera al conectar con la base (entero) | `10` |
+| `SUPABASE_AUTH_ISSUER` | Emisor de los tokens de sesión | — (503 al autenticar) |
+| `SUPABASE_JWT_SECRET` | Secreto de tokens HS256 heredados | — (solo JWKS) |
+| `JWKS_TIMEOUT_SECONDS` | Espera al descargar las claves públicas del emisor | `10` |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AUDIO_BUCKET` | Subida de audio dudoso a Storage | — (503 al subir audio) |
+| `STORAGE_TIMEOUT_SECONDS` | Espera de cada petición a Storage | `20` |
+| `MODEL_MANIFEST_PATH` | Manifiesto local del modelo | `birdnet_api/model_manifest.json` |
+| `MODEL_MANIFEST_URL` | Manifiesto remoto (solo `https`); sustituye al local | — |
+| `MODEL_MANIFEST_ALLOWED_HOSTS` | Hosts permitidos para `MODEL_MANIFEST_URL`, separados por comas | Host de `SUPABASE_URL` o, si falta, el de `MODEL_MANIFEST_URL` |
+| `MODEL_MANIFEST_TIMEOUT_SECONDS` | Espera al descargar el manifiesto remoto | `10` |
+| `MAX_MANIFEST_BYTES` | Tamaño máximo del manifiesto remoto | `131072` |
+| `MODEL_RESOURCE_BASE_URL` | Base de `model_file` y `labels_file` relativos | `/models/` |
+| `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
+| `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
+| `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
+| `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas si el cliente no envía `tz` | `America/Bogota` |

@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 
+from birdnet_api.domain import AUDIO_SAMPLE_RATE_HZ, AUDIO_WINDOW_SAMPLES
 from tests.test_api import api
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -15,7 +16,9 @@ def test_routes_live_at_the_api_root(api):
 
 def test_shipped_manifest_is_complete():
     manifest = json.loads((BACKEND / "birdnet_api" / "model_manifest.json").read_text(encoding="utf-8-sig"))
-    assert manifest["sample_rate"] == 48000 and manifest["num_classes"] > 0 and len(manifest["sha256"]) == 64
+    # The bundled model must take the window the client records and the server verifies.
+    assert manifest["sample_rate"] == AUDIO_SAMPLE_RATE_HZ and manifest["window_samples"] == AUDIO_WINDOW_SAMPLES
+    assert manifest["num_classes"] > 0 and len(manifest["sha256"]) == 64
 
 
 def test_function_has_explicit_budget_and_exclusions():

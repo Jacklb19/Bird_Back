@@ -62,7 +62,9 @@ def test_sites_require_session_and_approximate_location(site_api):
 def test_stats_windows_and_foreign_sites(site_api):
     client, repo, headers, _ = site_api
     site = client.post("/v1/sites", json={"name": "Humedal", "location": {"latitude": 4.7, "longitude": -74.1}}, headers=headers()).json()
-    assert client.get(f"/v1/sites/{site['id']}/stats", params={"tz": "Mars/Base"}, headers=headers()).status_code == 422
+    # "America" is a zone directory, not a zone: it once escaped validation as a 500.
+    for zone in ("Mars/Base", "America"):
+        assert client.get(f"/v1/sites/{site['id']}/stats", params={"tz": zone}, headers=headers()).status_code == 422
     assert client.get(f"/v1/sites/{site['id']}/stats", params={"period": "month"}, headers=headers()).status_code == 200
     period, since, previous, until, tz = repo.calls[-1]
     assert (until - since, since - previous, tz) == (timedelta(days=30), timedelta(days=30), "America/Bogota")
