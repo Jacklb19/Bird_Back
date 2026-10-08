@@ -1,4 +1,4 @@
-"""Synchronization, map, monitoring sites, statistics, CSV export and the model manifest."""
+"""Synchronization, map, profile, monitoring sites, statistics, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -11,14 +11,32 @@ from fastapi import APIRouter, Depends, FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .auth import authenticate
-from .contracts import AudioInput, AudioUpload, BatchInput, BatchResponse, ExportQuery, MapQuery, MapResponse, Site, SiteInput, SiteList, SiteStats, StatsQuery
+from .contracts import (
+    AudioInput,
+    AudioUpload,
+    AvatarInput,
+    AvatarUpload,
+    BatchInput,
+    BatchResponse,
+    ExportQuery,
+    MapQuery,
+    MapResponse,
+    Profile,
+    ProfileInput,
+    Site,
+    SiteInput,
+    SiteList,
+    SiteStats,
+    StatsQuery,
+)
 from .domain import DbDetectionStatus, DetectionStatus, local_status
 from .errors import ErrorCode, error_response, raise_error
 from .manifest import load_manifest
+from .profiles import ProfileRepository
 from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
 from .sites import SiteRepository
-from .storage import AudioStorage
+from .storage import AudioStorage, AvatarStorage
 
 # Version prefix shared by every public route.
 API_PREFIX: Final = "/v1"
@@ -26,6 +44,8 @@ API_PREFIX: Final = "/v1"
 TRUNCATED_HEADER: Final = "X-Truncated"
 EXPORT_FILENAME_TEMPLATE: Final = "birdnet-{site_id}.csv"
 EXPORT_MEDIA_TYPE: Final = "text/csv; charset=utf-8"
+# Methods whose bodies are read into memory and therefore bounded by MAX_METADATA_BODY_BYTES.
+BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH"})
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +78,14 @@ def storage() -> AudioStorage:
     return AudioStorage()
 
 
+def profiles() -> ProfileRepository:
+    return ProfileRepository()
+
+
+def avatars() -> AvatarStorage:
+    return AvatarStorage()
+
+
 @app.exception_handler(SettingsError)
 async def invalid_configuration(_: Request, error: SettingsError) -> JSONResponse:
     # The message names the variable; it goes to the operator's logs, not to the client.
@@ -67,8 +95,8 @@ async def invalid_configuration(_: Request, error: SettingsError) -> JSONRespons
 
 @app.middleware("http")
 async def bounded_body(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-    # The metadata endpoint never accepts audio or unbounded JSON bodies.
-    if request.method == "POST":
+    # The API never accepts audio, images or unbounded JSON bodies: files go straight to Storage.
+    if request.method in BOUNDED_BODY_METHODS:
         try:
             limit = get_settings().max_metadata_body_bytes
         except SettingsError as error:
@@ -114,6 +142,26 @@ def detections(query: Annotated[MapQuery, Query()], viewer: UUID = Depends(authe
     if query.since and query.until and query.since >= query.until:
         raise_error(ErrorCode.INVALID_PERIOD)
     return repo.map(viewer, query)
+
+
+@router.get("/me", response_model=Profile)
+def get_profile(owner: UUID = Depends(authenticate), repo: ProfileRepository = Depends(profiles), photos: AvatarStorage = Depends(avatars)) -> Profile:
+    stored = repo.get(owner)
+    return Profile(alias=stored.alias, avatar_url=photos.url(stored.avatar_path), created_at=stored.created_at)
+
+
+@router.patch("/me", response_model=Profile)
+def update_profile(payload: ProfileInput, owner: UUID = Depends(authenticate), repo: ProfileRepository = Depends(profiles), photos: AvatarStorage = Depends(avatars)) -> Profile:
+    if payload.avatar_path is not None:
+        photos.verify(owner, payload.avatar_path)
+    stored = repo.update(owner, payload.model_dump(include=payload.model_fields_set))
+    return Profile(alias=stored.alias, avatar_url=photos.url(stored.avatar_path), created_at=stored.created_at)
+
+
+@router.post("/me/avatar-url", response_model=AvatarUpload)
+def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
+    # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
+    return photos.sign(owner)
 
 
 @router.get("/sites", response_model=SiteList)

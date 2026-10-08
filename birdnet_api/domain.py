@@ -34,6 +34,8 @@ MAX_SPECIES_LENGTH: Final = 200
 MAX_MODEL_VERSION_LENGTH: Final = 200
 MAX_AUDIO_PATH_LENGTH: Final = 300
 MAX_SITE_NAME_LENGTH: Final = 80
+# Profile name; the CHECK `profiles_alias_length` (migration 20261008000000) enforces the same bound.
+MAX_ALIAS_LENGTH: Final = 40
 # IANA zone names are far shorter; the limit only bounds untrusted input.
 MAX_TIME_ZONE_LENGTH: Final = 64
 
@@ -147,6 +149,27 @@ AUDIO_OBJECT_PATH_TEMPLATE: Final = "{owner}/{detection}.{extension}"
 
 def audio_object_path(owner: UUID, detection: UUID) -> str:
     return AUDIO_OBJECT_PATH_TEMPLATE.format(owner=owner, detection=detection, extension=AUDIO_FILE_EXTENSION)
+
+
+# Profile photo: one WebP per user, overwritten on change. Size and type match the `avatars` bucket limits and
+# the path matches the CHECK `profiles_avatar_path_owned` (migration 20261008000000).
+AVATAR_CONTENT_TYPE: Final = "image/webp"
+MAX_AVATAR_BYTES: Final = 200_000
+AVATAR_OBJECT_PATH_TEMPLATE: Final = "{owner}/avatar.webp"
+# RIFF container header: "RIFF", 4-byte size, then the "WEBP" form type.
+WEBP_RIFF_ID: Final = b"RIFF"
+WEBP_FORM_TYPE: Final = b"WEBP"
+WEBP_FORM_TYPE_OFFSET: Final = 8
+# Lifetime of the signed photo URL in a profile response; the client asks for the profile again after it.
+AVATAR_URL_TTL_SECONDS: Final = 3600
+
+
+def avatar_object_path(owner: UUID) -> str:
+    return AVATAR_OBJECT_PATH_TEMPLATE.format(owner=owner)
+
+
+def is_webp(content: bytes) -> bool:
+    return content.startswith(WEBP_RIFF_ID) and content[WEBP_FORM_TYPE_OFFSET:WEBP_FORM_TYPE_OFFSET + len(WEBP_FORM_TYPE)] == WEBP_FORM_TYPE
 
 
 class ExportColumn(StrEnum):

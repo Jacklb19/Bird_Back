@@ -139,3 +139,19 @@ def test_sign_up_bounds_the_default_alias():
     with psycopg.connect(TEST_DATABASE_URL) as connection:
         connection.execute("INSERT INTO auth.users(id,email) VALUES (%s,%s)", (user, f"{'a' * 60}@example.invalid"))
         assert connection.execute("SELECT alias FROM public.profiles WHERE id=%s", (user,)).fetchone()[0] == "a" * 40
+
+
+def test_profile_upsert_runs_under_rls(database):
+    from birdnet_api.profiles import EMPTY_PROFILE, ProfileRepository
+
+    _, owner, _ = database
+    profiles = ProfileRepository()
+    # The sign-up trigger already created the row with the e-mail's local part.
+    assert profiles.get(owner).alias == str(owner)
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM public.profiles WHERE id=%s", (owner,))
+    assert profiles.get(owner) == EMPTY_PROFILE
+    created = profiles.update(owner, {"alias": "Ana"})
+    assert created.alias == "Ana" and created.created_at is not None
+    updated = profiles.update(owner, {"avatar_path": f"{owner}/avatar.webp"})
+    assert (updated.alias, updated.avatar_path) == ("Ana", f"{owner}/avatar.webp")
