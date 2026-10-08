@@ -155,3 +155,37 @@ def test_profile_upsert_runs_under_rls(database):
     assert created.alias == "Ana" and created.created_at is not None
     updated = profiles.update(owner, {"avatar_path": f"{owner}/avatar.webp"})
     assert (updated.alias, updated.avatar_path) == ("Ana", f"{owner}/avatar.webp")
+
+
+def test_personal_record_counts_only_own_kept_detections(database):
+    from datetime import UTC, datetime
+
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.records import RecordRepository
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Humedal", location={"latitude": 4.7, "longitude": -74.1}))
+    # 23:30 UTC on the 6th is 18:30 on the 6th in Bogotá; 03:00 UTC on the 7th is still the 6th there.
+    mine = [detection(species="Turdus fuscater", recorded_at="2026-10-06T23:30:00Z", site_id=str(site.id), confidence=0.6, status="provisional"),
+            detection(species="Turdus fuscater", recorded_at="2026-10-07T03:00:00Z", confidence=0.95),
+            detection(species="Zonotrichia capensis", recorded_at="2026-10-05T12:00:00Z")]
+    discarded = detection(species="Sturnella magna", recorded_at="2026-10-08T12:00:00Z")
+    repo.batch(owner, [DetectionInput.model_validate(r) for r in [*mine, discarded]])
+    repo.batch(other, [DetectionInput.model_validate(detection(species="Turdus fuscater"))])
+    with repo.transaction(owner) as connection:
+        connection.execute("UPDATE public.detections SET estado='descartada' WHERE id=%s", (discarded["id"],))
+    records = RecordRepository()
+    summary = records.summary(owner, "America/Bogota")
+    assert (summary.detections, summary.species, summary.sites, summary.active_days) == (3, 2, 1, 2)
+    assert summary.last_recorded_at == datetime(2026, 10, 7, 3, tzinfo=UTC)
+    assert [s.species for s in records.species(owner).species] == ["Turdus fuscater", "Zonotrichia capensis"]
+    thrush = records.species_record(owner, "Turdus fuscater", "America/Bogota")
+    assert thrush.detections == 2 and round(thrush.best_confidence, 2) == 0.95
+    assert thrush.hours[18] == 1 and thrush.hours[22] == 1 and sum(thrush.hours) == 2
+    assert [(s.name, s.detections) for s in thrush.sites] == [("Humedal", 1)]
+    assert sum(c.detections for c in thrush.cells) == 2
+    assert [str(r.id) for r in thrush.recent] == [mine[1]["id"], mine[0]["id"]] and not thrush.recent[0].has_audio
+    assert records.species_record(owner, "Sturnella magna", "UTC").model_dump(include={"detections", "best_confidence", "recent", "sites", "cells"}) == \
+        {"detections": 0, "best_confidence": None, "recent": [], "sites": [], "cells": []}
+    assert records.summary(other, "UTC").sites == 0

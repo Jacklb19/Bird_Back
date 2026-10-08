@@ -248,3 +248,65 @@ class AvatarUpload(StrictModel):
     upload_url: str
     avatar_path: str
 
+
+class TimeZoneQuery(StrictModel):
+    """Same `tz` parameter and validation as the site statistics."""
+    tz: TimeZoneName = Field(default_factory=_default_time_zone)
+
+
+class RecordSummary(StrictModel):
+    """The caller's own record without discarded detections."""
+    detections: int
+    species: int
+    sites: int
+    first_recorded_at: datetime | None
+    last_recorded_at: datetime | None
+    active_days: int
+
+
+class OwnSpecies(StrictModel):
+    species: str
+    detections: int
+    best_confidence: float
+    first_recorded_at: datetime
+    last_recorded_at: datetime
+    sites: int
+
+
+class OwnSpeciesList(StrictModel):
+    species: list[OwnSpecies]
+
+
+class SpeciesSite(StrictModel):
+    id: UUID
+    name: str
+    detections: int
+
+
+class SpeciesCell(StrictModel):
+    """One ~100 m cell, the precision locations are stored with."""
+    latitude: float
+    longitude: float
+    detections: int
+
+
+class SpeciesDetection(StrictModel):
+    id: UUID
+    recorded_at: datetime
+    confidence: float
+    status: MapDetectionStatus
+    site_id: UUID | None
+    has_audio: bool
+
+
+class SpeciesRecord(StrictModel):
+    """One species in the caller's record; a species never recorded has zero detections and empty lists."""
+    species: str
+    detections: int
+    best_confidence: float | None
+    first_recorded_at: datetime | None
+    last_recorded_at: datetime | None
+    hours: list[int] = Field(min_length=HOURS_PER_DAY, max_length=HOURS_PER_DAY)
+    sites: list[SpeciesSite]
+    cells: list[SpeciesCell]
+    recent: list[SpeciesDetection]

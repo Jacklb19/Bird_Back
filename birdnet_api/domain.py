@@ -104,6 +104,10 @@ DEFAULT_STATS_PERIOD: Final = StatsPeriod.MONTH
 MAX_MISSING_SPECIES: Final = 10
 # Length of the per-hour activity series.
 HOURS_PER_DAY: Final = 24
+# Bounds of the personal record: species listed, map cells and latest detections of one species.
+MAX_OWN_SPECIES: Final = 2000
+MAX_SPECIES_CELLS: Final = 500
+MAX_RECENT_DETECTIONS: Final = 20
 
 
 def is_time_zone(name: str) -> bool:

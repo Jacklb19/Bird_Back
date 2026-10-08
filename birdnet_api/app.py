@@ -1,4 +1,4 @@
-"""Synchronization, map, profile, monitoring sites, statistics, CSV export and the model manifest."""
+"""Synchronization, map, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -7,7 +7,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .auth import authenticate
@@ -21,18 +21,23 @@ from .contracts import (
     ExportQuery,
     MapQuery,
     MapResponse,
+    OwnSpeciesList,
     Profile,
     ProfileInput,
+    RecordSummary,
     Site,
     SiteInput,
     SiteList,
     SiteStats,
+    SpeciesRecord,
     StatsQuery,
+    TimeZoneQuery,
 )
-from .domain import DbDetectionStatus, DetectionStatus, local_status
+from .domain import MAX_SPECIES_LENGTH, DbDetectionStatus, DetectionStatus, local_status
 from .errors import ErrorCode, error_response, raise_error
 from .manifest import load_manifest
 from .profiles import ProfileRepository
+from .records import RecordRepository
 from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
 from .sites import SiteRepository
@@ -84,6 +89,10 @@ def profiles() -> ProfileRepository:
 
 def avatars() -> AvatarStorage:
     return AvatarStorage()
+
+
+def records() -> RecordRepository:
+    return RecordRepository()
 
 
 @app.exception_handler(SettingsError)
@@ -162,6 +171,23 @@ def update_profile(payload: ProfileInput, owner: UUID = Depends(authenticate), r
 def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
     # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
     return photos.sign(owner)
+
+
+@router.get("/me/summary", response_model=RecordSummary)
+def record_summary(query: Annotated[TimeZoneQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> RecordSummary:
+    return repo.summary(owner, query.tz)
+
+
+@router.get("/me/species", response_model=OwnSpeciesList)
+def own_species(owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnSpeciesList:
+    return repo.species(owner)
+
+
+@router.get("/me/species/{species}", response_model=SpeciesRecord)
+def species_record(species: Annotated[str, Path(min_length=1, max_length=MAX_SPECIES_LENGTH)], query: Annotated[TimeZoneQuery, Query()],
+                   owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> SpeciesRecord:
+    # A species the caller never recorded is an empty record, not an error: the client shows it as "not yet".
+    return repo.species_record(owner, species, query.tz)
 
 
 @router.get("/sites", response_model=SiteList)
