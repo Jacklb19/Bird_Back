@@ -88,3 +88,34 @@ def test_map_is_collective_filtered_and_hides_discarded(database):
     assert repo.map(other, MapQuery(**area, species="Other species")).detections == []
     elsewhere = repo.map(other, MapQuery(west=10, south=10, east=11, north=11))
     assert bogota.id not in {row.id for row in elsewhere.detections}
+
+
+def test_sites_stats_and_batch_site_ownership(database):
+    from datetime import UTC, datetime, timedelta
+
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, other = database
+    sites = SiteRepository()
+    mine = sites.create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    assert sites.list_sites(other) == []
+    foreign = DetectionInput.model_validate(detection(site_id=str(mine.id)))
+    with pytest.raises(HTTPException) as error:
+        repo.batch(other, [foreign])
+    assert error.value.status_code == 422
+    now = datetime(2026, 10, 7, 12, tzinfo=UTC)
+    rows = [detection(site_id=str(mine.id), species="Turdus fuscater", recorded_at=(now - timedelta(days=2)).isoformat()),
+            detection(site_id=str(mine.id), species="Turdus fuscater", recorded_at=(now - timedelta(days=40)).isoformat()),
+            detection(site_id=str(mine.id), species="Sturnella magna", recorded_at=(now - timedelta(days=45)).isoformat()),
+            detection(site_id=str(mine.id), species="Pyrocephalus rubinus", recorded_at=(now - timedelta(days=1)).isoformat())]
+    repo.batch(owner, [DetectionInput.model_validate(r) for r in rows])
+    stats = sites.stats(owner, mine.id, "month", now - timedelta(days=30), now - timedelta(days=60), now, "America/Bogota")
+    assert stats.species_count == 2 and stats.previous_species_count == 2 and stats.detections == 2
+    assert {s.species: s.is_new for s in stats.species} == {"Turdus fuscater": False, "Pyrocephalus rubinus": True}
+    assert stats.missing == ["Sturnella magna"] and sum(stats.hourly) == 2
+    with pytest.raises(HTTPException) as error:
+        sites.stats(other, mine.id, "all", None, None, now, "UTC")
+    assert error.value.status_code == 404
+    body, truncated = sites.export_csv(owner, mine.id, None, None)
+    assert body.count("\n") == 5 and not truncated

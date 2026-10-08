@@ -12,6 +12,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from birdnet_api.app import app, storage
+from birdnet_api.domain import EXPECTED_WAV_BYTES
 from birdnet_api.storage import AudioStorage
 from tests.prepare_database import TEST_DATABASE_URL
 
@@ -32,7 +33,7 @@ class LocalAudioStorage(AudioStorage):
         return {"upload_url": f"/api/test/upload/{path}", "audio_path": path}
 
     def verify(self, user, detection, path):
-        if path != self.path(user, detection) or len(uploads.get(path, b"")) != 288044:
+        if path != self.path(user, detection) or len(uploads.get(path, b"")) != EXPECTED_WAV_BYTES:
             raise ValueError("Missing fixture upload")
 
 
