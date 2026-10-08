@@ -9,5 +9,8 @@
   "size_bytes": 38727042,
   "labels_file": "labels.txt",
   "model_file": "birdnet_model.onnx",
-  "updated_at": "2026-09-29"
+  "updated_at": "2026-10-08",
+  "geo_model_file": "birdnet_geo_model.onnx",
+  "geo_sha256": "588256a58792a4a364797d5d2d71d1786638e8129b5254b2a6ddc1abbc907d0d",
+  "geo_size_bytes": 16163671
 }

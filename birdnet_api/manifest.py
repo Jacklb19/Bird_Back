@@ -12,6 +12,8 @@ from .settings import Settings
 MANIFEST_URL_SCHEME: Final = "https"
 # Manifest fields that name model resources; relative values are resolved against MODEL_RESOURCE_BASE_URL.
 RESOURCE_FIELDS: Final = ("model_file", "labels_file")
+# Resources a manifest may name: the geographic model (ADR-18) is published only by newer manifests.
+OPTIONAL_RESOURCE_FIELDS: Final = ("geo_model_file",)
 ABSOLUTE_RESOURCE_PREFIXES: Final = ("https://", "http://", "/")
 # Tolerates the byte order mark some Windows editors add to JSON files.
 MANIFEST_FILE_ENCODING: Final = "utf-8-sig"
@@ -22,7 +24,8 @@ def load_manifest(settings: Settings) -> dict[str, Any]:
         manifest = _fetch(settings, settings.model_manifest_url) if settings.model_manifest_url else _read(settings)
         if not isinstance(manifest, dict):
             raise ValueError("Manifest is not an object")
-        for field in RESOURCE_FIELDS:
+        present_optional = tuple(field for field in OPTIONAL_RESOURCE_FIELDS if field in manifest)
+        for field in RESOURCE_FIELDS + present_optional:
             resource = manifest[field]
             if not isinstance(resource, str):
                 raise ValueError(f"Manifest field {field} is not a string")
