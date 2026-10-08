@@ -10,11 +10,22 @@ API de BirdNet Local: FastAPI desplegada como función Python en Vercel, con Pos
 | `GET /v1/model/latest` | Manifiesto vigente del modelo acústico | No |
 | `POST /v1/detections/batch` | Sincronización idempotente de la cola local | Sí |
 | `POST /v1/detections/{id}/audio-url` | URL firmada para subir audio dudoso a Storage | Sí |
-| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo | Sí |
+| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
+| `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
+| `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
+| `POST /v1/me/avatar-url` | URL firmada para subir la foto (WebP, máx. 200 000 bytes) al bucket privado | Sí |
+| `GET /v1/me/summary?tz=` | Totales propios sin descartadas: detecciones, especies, sitios, primera y última, días activos | Sí |
+| `GET /v1/me/species` | Especies propias con detecciones, mejor confianza, primera y última y sitios | Sí |
+| `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~100 m y últimas detecciones (vacía si no hay) | Sí |
+| `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
+| `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio | Sí |
+| `GET /v1/export?site_id=` | Exportación CSV de un sitio | Sí |
 
 ## Estructura
 
-- `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorio y Storage).
+- `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorios y Storage).
+  - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `sites.py`: sitios, estadísticas y CSV.
+  - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (audio WAV, foto WebP).
   - `settings.py`: configuración leída del entorno una sola vez y validada.
   - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, formato WAV, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
   - `errors.py`: catálogo de errores con su código HTTP y mensaje.
@@ -55,7 +66,9 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `SUPABASE_AUTH_ISSUER` | Emisor de los tokens de sesión | — (503 al autenticar) |
 | `SUPABASE_JWT_SECRET` | Secreto de tokens HS256 heredados | — (solo JWKS) |
 | `JWKS_TIMEOUT_SECONDS` | Espera al descargar las claves públicas del emisor | `10` |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_AUDIO_BUCKET` | Subida de audio dudoso a Storage | — (503 al subir audio) |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Acceso a Storage con la clave de servicio (audio dudoso y fotos de perfil) | — (503 al subir; perfil sin foto) |
+| `SUPABASE_AUDIO_BUCKET` | Bucket privado del audio dudoso | — (503 al subir audio) |
+| `SUPABASE_AVATAR_BUCKET` | Bucket privado de las fotos de perfil (lo crea la migración `20261008000000`) | `avatars` |
 | `STORAGE_TIMEOUT_SECONDS` | Espera de cada petición a Storage | `20` |
 | `MODEL_MANIFEST_PATH` | Manifiesto local del modelo | `birdnet_api/model_manifest.json` |
 | `MODEL_MANIFEST_URL` | Manifiesto remoto (solo `https`); sustituye al local | — |
@@ -66,4 +79,4 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
 | `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
 | `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
-| `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas si el cliente no envía `tz` | `America/Bogota` |
+| `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas y del registro personal si el cliente no envía `tz` | `America/Bogota` |
