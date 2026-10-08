@@ -138,7 +138,10 @@ class MapQuery(StrictModel):
 
 
 class MapDetection(StrictModel):
-    """Collective map row: never exposes the author or the audio path."""
+    """Collective map row: never exposes the author or the audio path.
+
+    `own` tells viewers which rows are theirs; `site_name` is filled only for those, since sites are private.
+    """
     id: UUID
     species: str
     confidence: float
@@ -146,6 +149,8 @@ class MapDetection(StrictModel):
     recorded_at: datetime
     latitude: float
     longitude: float
+    own: bool
+    site_name: str | None
 
 
 class MapResponse(StrictModel):

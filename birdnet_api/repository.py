@@ -73,25 +73,28 @@ class DetectionRepository:
     def map(self, viewer: UUID, query: MapQuery) -> MapResponse:
         limit = get_settings().map_result_limit
         # Discarded detections stay private to their author; the map only shows usable indications.
+        # Site names are private too: RLS already hides foreign sites, and the CASE keeps them out even without it.
         with self.transaction(viewer) as connection:
             rows = connection.execute(
-                """SELECT id, especie, confianza, estado, momento,
-                    ST_Y(ubicacion::geometry) AS latitude, ST_X(ubicacion::geometry) AS longitude
-                FROM public.detections
-                WHERE estado <> %(discarded)s
-                  AND ST_Intersects(ubicacion::geometry, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
-                  AND (%(species)s::text IS NULL OR especie = %(species)s)
-                  AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s)
-                  AND (%(until)s::timestamptz IS NULL OR momento < %(until)s)
-                ORDER BY momento DESC LIMIT %(fetch)s""",
-                {"discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
+                """SELECT d.id, d.especie, d.confianza, d.estado, d.momento,
+                    ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude,
+                    d.user_id = %(viewer)s AS own, CASE WHEN d.user_id = %(viewer)s THEN s.nombre END AS site_name
+                FROM public.detections d LEFT JOIN public.sites s ON s.id = d.site_id
+                WHERE d.estado <> %(discarded)s
+                  AND ST_Intersects(d.ubicacion::geometry, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
+                  AND (%(species)s::text IS NULL OR d.especie = %(species)s)
+                  AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
+                ORDER BY d.momento DESC LIMIT %(fetch)s""",
+                {"viewer": viewer, "discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
                  "north": query.north, "srid": WGS84_SRID, "species": query.species, "since": query.since, "until": query.until,
                  # One extra row tells whether the result was cut at the limit.
                  "fetch": limit + 1},
             ).fetchall()
         detections = [
             MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=DB_TO_API_STATUS[row["estado"]],
-                         recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"])
+                         recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"], own=row["own"],
+                         site_name=row["site_name"])
             for row in rows[:limit]
         ]
         return MapResponse(detections=detections, truncated=len(rows) > limit)

@@ -189,3 +189,20 @@ def test_personal_record_counts_only_own_kept_detections(database):
     assert records.species_record(owner, "Sturnella magna", "UTC").model_dump(include={"detections", "best_confidence", "recent", "sites", "cells"}) == \
         {"detections": 0, "best_confidence": None, "recent": [], "sites": [], "cells": []}
     assert records.summary(other, "UTC").sites == 0
+
+
+def test_map_marks_own_rows_and_hides_foreign_sites(database):
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca privada", location={"latitude": 4.679, "longitude": -74.123}))
+    row = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [row])
+    area = MapQuery(west=-74.2, south=4.6, east=-74.0, north=4.7, species=row.species)
+
+    def seen_by(viewer):
+        return next(r for r in repo.map(viewer, area).detections if r.id == row.id)
+
+    assert (seen_by(owner).own, seen_by(owner).site_name) == (True, "Finca privada")
+    assert (seen_by(other).own, seen_by(other).site_name) == (False, None)
