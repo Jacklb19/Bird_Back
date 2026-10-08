@@ -119,3 +119,23 @@ def test_sites_stats_and_batch_site_ownership(database):
     assert error.value.status_code == 404
     body, truncated = sites.export_csv(owner, mine.id, None, None)
     assert body.count("\n") == 5 and not truncated
+
+
+def test_profiles_are_private_and_bounded(database):
+    repo, owner, other = database
+    with repo.transaction(other) as connection:
+        assert connection.execute("SELECT 1 FROM public.profiles WHERE id=%s", (owner,)).fetchone() is None
+        assert connection.execute("UPDATE public.profiles SET alias='forged' WHERE id=%s", (owner,)).rowcount == 0
+    for column, value in (("alias", "x" * 41), ("alias", ""), ("avatar_path", f"{other}/avatar.webp"), ("avatar_path", f"{owner}/other.webp")):
+        with pytest.raises(HTTPException) as error, repo.transaction(owner) as connection:
+            connection.execute(psycopg.sql.SQL("UPDATE public.profiles SET {}=%s WHERE id=%s").format(psycopg.sql.Identifier(column)), (value, owner))
+        assert error.value.status_code == 503
+    with repo.transaction(owner) as connection:
+        assert connection.execute("UPDATE public.profiles SET avatar_path=%s WHERE id=%s", (f"{owner}/avatar.webp", owner)).rowcount == 1
+
+
+def test_sign_up_bounds_the_default_alias():
+    user = uuid4()
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("INSERT INTO auth.users(id,email) VALUES (%s,%s)", (user, f"{'a' * 60}@example.invalid"))
+        assert connection.execute("SELECT alias FROM public.profiles WHERE id=%s", (user,)).fetchone()[0] == "a" * 40
