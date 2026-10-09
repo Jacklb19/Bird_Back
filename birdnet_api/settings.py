@@ -1,6 +1,6 @@
 """Runtime configuration, read once from environment variables and validated with messages naming the variable.
 
-Credentials and endpoints of optional features (database, authentication, audio storage, remote manifest)
+Credentials and endpoints of optional features (database, authentication, Storage, remote manifest)
 may be absent: each feature reports its own "not configured" error when a request needs it, so the API still
 starts and serves everything else. Tunables have the defaults below and fail fast when malformed.
 """
@@ -28,6 +28,8 @@ DEFAULT_MAX_METADATA_BODY_BYTES: Final = 128 * 1024
 DEFAULT_MAX_MANIFEST_BYTES: Final = 128 * 1024
 DEFAULT_MAP_RESULT_LIMIT: Final = 2000
 DEFAULT_EXPORT_ROW_LIMIT: Final = 20_000
+# Created by migration 20261008000000_profiles_and_avatars.sql.
+DEFAULT_AVATAR_BUCKET: Final = "avatars"
 # Deployment region; used for statistics when the client sends no time zone.
 DEFAULT_TIME_ZONE: Final = "America/Bogota"
 # Vercel rejects function request bodies above 4.5 MB, so a larger metadata limit could never apply.
@@ -50,10 +52,11 @@ class Settings:
     supabase_auth_issuer: str | None
     supabase_jwt_secret: str | None
     jwks_timeout_seconds: float
-    # Private audio bucket in Supabase Storage; `supabase_url` has no trailing slash.
+    # Private Storage buckets for audio and profile photos; `supabase_url` has no trailing slash.
     supabase_url: str | None
     supabase_service_role_key: str | None
     supabase_audio_bucket: str | None
+    supabase_avatar_bucket: str
     storage_timeout_seconds: float
     # Model manifest: the remote URL wins over the local file when set.
     model_manifest_path: Path
@@ -89,6 +92,7 @@ class Settings:
             supabase_url=supabase_url.rstrip("/") if supabase_url else None,
             supabase_service_role_key=_text(environ, "SUPABASE_SERVICE_ROLE_KEY"),
             supabase_audio_bucket=_text(environ, "SUPABASE_AUDIO_BUCKET"),
+            supabase_avatar_bucket=_text(environ, "SUPABASE_AVATAR_BUCKET") or DEFAULT_AVATAR_BUCKET,
             storage_timeout_seconds=_positive_seconds(environ, "STORAGE_TIMEOUT_SECONDS", DEFAULT_STORAGE_TIMEOUT_SECONDS),
             model_manifest_path=Path(manifest_path) if manifest_path else BUNDLED_MODEL_MANIFEST,
             model_manifest_url=model_manifest_url,

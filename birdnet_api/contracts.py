@@ -8,13 +8,16 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validat
 
 from .domain import (
     AUDIO_CONTENT_TYPE,
+    AVATAR_CONTENT_TYPE,
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
     EXPECTED_WAV_BYTES,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
     LOCATION_GRID_TOLERANCE,
+    MAX_ALIAS_LENGTH,
     MAX_AUDIO_PATH_LENGTH,
+    MAX_AVATAR_BYTES,
     MAX_CONFIDENCE,
     MAX_LATITUDE,
     MAX_LONGITUDE,
@@ -43,6 +46,24 @@ def _require_timezone(value: datetime) -> datetime:
 
 # Naive timestamps are ambiguous across devices and time zones, so every instant must carry its offset.
 AwareTimestamp = Annotated[datetime, AfterValidator(_require_timezone)]
+
+
+def _require_known_zone(value: str) -> str:
+    if not is_time_zone(value):
+        raise ValueError("Unknown time zone")
+    return value
+
+
+def _default_time_zone() -> str:
+    # Read per request so the configured default applies without re-importing the contracts.
+    return get_settings().default_time_zone
+
+
+TimeZoneName = Annotated[str, Field(max_length=MAX_TIME_ZONE_LENGTH), AfterValidator(_require_known_zone)]
+
+
+def _collapse_spaces(value: object) -> object:
+    return " ".join(value.split()) if isinstance(value, str) else value
 
 
 class Location(StrictModel):
@@ -117,7 +138,10 @@ class MapQuery(StrictModel):
 
 
 class MapDetection(StrictModel):
-    """Collective map row: never exposes the author or the audio path."""
+    """Collective map row: never exposes the author or the audio path.
+
+    `own` tells viewers which rows are theirs; `site_name` is filled only for those, since sites are private.
+    """
     id: UUID
     species: str
     confidence: float
@@ -125,6 +149,8 @@ class MapDetection(StrictModel):
     recorded_at: datetime
     latitude: float
     longitude: float
+    own: bool
+    site_name: str | None
 
 
 class MapResponse(StrictModel):
@@ -159,15 +185,7 @@ class SiteList(StrictModel):
 
 class StatsQuery(StrictModel):
     period: StatsPeriod = DEFAULT_STATS_PERIOD
-    # Read per request so the configured default applies without re-importing the contracts.
-    tz: str = Field(default_factory=lambda: get_settings().default_time_zone, max_length=MAX_TIME_ZONE_LENGTH)
-
-    @field_validator("tz")
-    @classmethod
-    def require_known_zone(cls, value: str) -> str:
-        if not is_time_zone(value):
-            raise ValueError("Unknown time zone")
-        return value
+    tz: TimeZoneName = Field(default_factory=_default_time_zone)
 
 
 class SpeciesStat(StrictModel):
@@ -196,3 +214,104 @@ class ExportQuery(StrictModel):
     site_id: UUID
     since: AwareTimestamp | None = None
     until: AwareTimestamp | None = None
+
+
+class Profile(StrictModel):
+    """The caller's profile; every field is null until set (or while the photo cannot be signed)."""
+    alias: str | None
+    avatar_url: str | None
+    created_at: datetime | None
+
+
+class ProfileInput(StrictModel):
+    """Partial update: omitted fields keep their value and null clears them."""
+    alias: Annotated[str | None, Field(min_length=1, max_length=MAX_ALIAS_LENGTH)] = None
+    # Checked against the caller's own photo path (and the uploaded bytes) by the route.
+    avatar_path: str | None = None
+
+    @field_validator("alias", mode="before")
+    @classmethod
+    def normalize_alias(cls, value: object) -> object:
+        return _collapse_spaces(value)
+
+
+class AvatarInput(StrictModel):
+    """Declared photo upload: WebP only, within the bucket's size limit."""
+    content_type: str = Field(strict=True, json_schema_extra={"const": AVATAR_CONTENT_TYPE})
+    size_bytes: int = Field(strict=True, ge=1, le=MAX_AVATAR_BYTES)
+
+    @field_validator("content_type")
+    @classmethod
+    def require_webp(cls, value: str) -> str:
+        if value != AVATAR_CONTENT_TYPE:
+            raise ValueError(f"Only {AVATAR_CONTENT_TYPE} is accepted")
+        return value
+
+
+class AvatarUpload(StrictModel):
+    """Signed Storage upload target and the object path the client then saves with PATCH /me."""
+    upload_url: str
+    avatar_path: str
+
+
+class TimeZoneQuery(StrictModel):
+    """Same `tz` parameter and validation as the site statistics."""
+    tz: TimeZoneName = Field(default_factory=_default_time_zone)
+
+
+class RecordSummary(StrictModel):
+    """The caller's own record without discarded detections."""
+    detections: int
+    species: int
+    sites: int
+    first_recorded_at: datetime | None
+    last_recorded_at: datetime | None
+    active_days: int
+
+
+class OwnSpecies(StrictModel):
+    species: str
+    detections: int
+    best_confidence: float
+    first_recorded_at: datetime
+    last_recorded_at: datetime
+    sites: int
+
+
+class OwnSpeciesList(StrictModel):
+    species: list[OwnSpecies]
+
+
+class SpeciesSite(StrictModel):
+    id: UUID
+    name: str
+    detections: int
+
+
+class SpeciesCell(StrictModel):
+    """One ~100 m cell, the precision locations are stored with."""
+    latitude: float
+    longitude: float
+    detections: int
+
+
+class SpeciesDetection(StrictModel):
+    id: UUID
+    recorded_at: datetime
+    confidence: float
+    status: MapDetectionStatus
+    site_id: UUID | None
+    has_audio: bool
+
+
+class SpeciesRecord(StrictModel):
+    """One species in the caller's record; a species never recorded has zero detections and empty lists."""
+    species: str
+    detections: int
+    best_confidence: float | None
+    first_recorded_at: datetime | None
+    last_recorded_at: datetime | None
+    hours: list[int] = Field(min_length=HOURS_PER_DAY, max_length=HOURS_PER_DAY)
+    sites: list[SpeciesSite]
+    cells: list[SpeciesCell]
+    recent: list[SpeciesDetection]

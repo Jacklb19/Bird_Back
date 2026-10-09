@@ -31,10 +31,12 @@ class ErrorCode(Enum):
     DETECTION_ID_CONFLICT = (HTTPStatus.CONFLICT, "Detection identifier conflict")
     AUDIO_ID_CONFLICT = (HTTPStatus.CONFLICT, "Audio identifier conflict")
     MODEL_MANIFEST_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "Model manifest unavailable")
-    STORAGE_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Audio storage is not configured")
-    UPLOAD_NOT_PREPARED = (HTTPStatus.BAD_GATEWAY, "Audio upload could not be prepared")
+    STORAGE_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Storage is not configured")
+    UPLOAD_NOT_PREPARED = (HTTPStatus.BAD_GATEWAY, "Upload could not be prepared")
     INVALID_AUDIO_PATH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid audio path")
     AUDIO_NOT_VERIFIED = (HTTPStatus.UNPROCESSABLE_ENTITY, "Uploaded audio could not be verified")
+    INVALID_AVATAR_PATH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid profile photo path")
+    AVATAR_NOT_VERIFIED = (HTTPStatus.UNPROCESSABLE_ENTITY, "Uploaded profile photo could not be verified")
 
     def __init__(self, status: HTTPStatus, message: str) -> None:
         self.status = status

@@ -63,7 +63,10 @@ def test_requests_use_the_configured_limits(monkeypatch):
     monkeypatch.setenv("MODEL_RESOURCE_BASE_URL", "https://cdn.example/models/")
     with TestClient(app) as client:
         assert client.post("/v1/sites", content=b" " * 1025).status_code == 413
-        assert client.get("/v1/model/latest").json()["model_file"] == "https://cdn.example/models/birdnet_model.onnx"
+        manifest = client.get("/v1/model/latest").json()
+        assert manifest["model_file"] == "https://cdn.example/models/birdnet_model.onnx"
+        # The geographic model lives next to the acoustic one, so it resolves against the same base.
+        assert manifest["geo_model_file"] == "https://cdn.example/models/birdnet_geo_model.onnx"
 
 
 def test_remote_manifest_comes_only_from_allowed_tls_hosts(monkeypatch):
