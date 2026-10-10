@@ -226,3 +226,51 @@ def test_map_marks_own_rows_and_hides_foreign_sites(database):
 
     assert (seen_by(owner).own, seen_by(owner).site_name) == (True, "Finca privada")
     assert (seen_by(other).own, seen_by(other).site_name) == (False, None)
+
+
+def test_unshared_detections_reach_only_their_author(database):
+    from datetime import UTC, datetime
+
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.records import RecordRepository
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, other = database
+    sites = SiteRepository()
+    site = sites.create_site(owner, SiteInput(name="Jardín", location={"latitude": 4.679, "longitude": -74.123}))
+    kept = DetectionInput.model_validate(detection(site_id=str(site.id), shared=False))
+    shared = DetectionInput.model_validate(detection())
+    theirs = DetectionInput.model_validate(detection())
+    repo.batch(owner, [kept, shared])
+    repo.batch(other, [theirs])
+    area = MapQuery(west=-74.2, south=4.6, east=-74.0, north=4.7)
+
+    def on_map(viewer):
+        return {row.id for row in repo.map(viewer, area).detections} & {kept.id, shared.id, theirs.id}
+
+    def readable(viewer):
+        with repo.transaction(viewer) as connection:
+            rows = connection.execute("SELECT id FROM public.detections WHERE id = ANY(%s)", ([kept.id, shared.id, theirs.id],)).fetchall()
+        return {row["id"] for row in rows}
+
+    # Hidden from other people on the map and by RLS itself, whatever query reaches the table.
+    assert on_map(other) == readable(other) == {shared.id, theirs.id}
+    assert on_map(owner) == readable(owner) == {kept.id, shared.id, theirs.id}
+    # The author keeps everything: map marker, site statistics, export and personal record.
+    assert next(row.own for row in repo.map(owner, area).detections if row.id == kept.id)
+    assert sites.stats(owner, site.id, "all", None, None, datetime(2026, 10, 10, tzinfo=UTC), "UTC").detections == 1
+    assert str(kept.id) in sites.export_csv(owner, site.id, None, None)[0]
+    assert RecordRepository().summary(owner, "UTC").detections == 2
+
+    # The switch changes every row of the caller and nobody else's.
+    assert repo.set_sharing(other, False) == 1
+    assert on_map(owner) == readable(owner) == {kept.id, shared.id}
+    assert on_map(other) == {shared.id, theirs.id}
+    assert (repo.set_sharing(owner, True), repo.set_sharing(owner, True)) == (1, 0)
+    assert on_map(other) == readable(other) == {kept.id, shared.id, theirs.id}
+    assert repo.set_sharing(owner, False) == 2
+    assert on_map(other) == readable(other) == {theirs.id}
+    # A queue retry that still says "shared" must not undo the choice.
+    shared.shared = True
+    assert repo.batch(owner, [shared]).existing_ids == [shared.id]
+    assert on_map(other) == {theirs.id}

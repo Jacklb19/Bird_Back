@@ -88,6 +88,8 @@ class DetectionInput(StrictModel):
     model_version: str = Field(min_length=1, max_length=MAX_MODEL_VERSION_LENGTH)
     audio_path: str | None = Field(default=None, max_length=MAX_AUDIO_PATH_LENGTH)
     site_id: UUID | None = None
+    # Whether other people see it on the collective map. Clients that predate the choice shared everything.
+    shared: bool = Field(default=True, strict=True)
 
 
 class BatchInput(StrictModel):
@@ -140,7 +142,8 @@ class MapQuery(StrictModel):
 class MapDetection(StrictModel):
     """Collective map row: never exposes the author or the audio path.
 
-    `own` tells viewers which rows are theirs; `site_name` is filled only for those, since sites are private.
+    Other people's rows appear only while their author shares them. `own` tells viewers which rows are theirs;
+    `site_name` is filled only for those, since sites are private.
     """
     id: UUID
     species: str
@@ -156,6 +159,16 @@ class MapDetection(StrictModel):
 class MapResponse(StrictModel):
     detections: list[MapDetection]
     truncated: bool
+
+
+class SharingInput(StrictModel):
+    """The caller's choice, applied to every detection they have already uploaded."""
+    shared: bool = Field(strict=True)
+
+
+class SharingUpdate(StrictModel):
+    """Number of detections whose sharing changed; repeating the same choice changes none."""
+    updated: int
 
 
 class SiteInput(StrictModel):

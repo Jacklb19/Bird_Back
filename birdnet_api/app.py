@@ -25,6 +25,8 @@ from .contracts import (
     Profile,
     ProfileInput,
     RecordSummary,
+    SharingInput,
+    SharingUpdate,
     Site,
     SiteInput,
     SiteList,
@@ -171,6 +173,12 @@ def update_profile(payload: ProfileInput, owner: UUID = Depends(authenticate), r
 def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
     # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
     return photos.sign(owner)
+
+
+@router.post("/me/sharing", response_model=SharingUpdate)
+def set_sharing(payload: SharingInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository)) -> SharingUpdate:
+    # One switch covers what is already in the cloud; detections synchronized later carry their own `shared` value.
+    return SharingUpdate(updated=repo.set_sharing(owner, payload.shared))
 
 
 @router.get("/me/summary", response_model=RecordSummary)

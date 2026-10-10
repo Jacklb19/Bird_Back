@@ -50,14 +50,15 @@ class DetectionRepository:
                 if visible != set(sites):
                     raise_error(ErrorCode.UNKNOWN_SITE)
             for row in detections:
+                # A retry never rewrites a stored row, so it cannot undo a later sharing choice either.
                 inserted = connection.execute(
-                    """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,momento,ubicacion,version_modelo)
+                    """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,momento,ubicacion,version_modelo,compartida)
                     VALUES (%(id)s,%(owner)s,%(site)s,%(species)s,%(confidence)s,%(status)s,%(recorded_at)s,
-                        ST_SetSRID(ST_MakePoint(%(longitude)s,%(latitude)s),%(srid)s::integer)::geography,%(model_version)s)
+                        ST_SetSRID(ST_MakePoint(%(longitude)s,%(latitude)s),%(srid)s::integer)::geography,%(model_version)s,%(shared)s)
                     ON CONFLICT (id) DO NOTHING RETURNING id""",
                     {"id": row.id, "owner": owner, "site": row.site_id, "species": row.species, "confidence": row.confidence,
                      "status": API_TO_DB_STATUS[row.status].value, "recorded_at": row.recorded_at, "longitude": row.location.longitude,
-                     "latitude": row.location.latitude, "srid": WGS84_SRID, "model_version": row.model_version},
+                     "latitude": row.location.latitude, "srid": WGS84_SRID, "model_version": row.model_version, "shared": row.shared},
                 ).fetchone()
                 owned = connection.execute("SELECT id, especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
                 if not owned or owned["especie"] != row.species or owned["version_modelo"] != row.model_version:
@@ -70,9 +71,17 @@ class DetectionRepository:
                 (accepted if inserted else existing).append(row.id)
         return BatchResponse(accepted_ids=accepted, existing_ids=existing)
 
+    def set_sharing(self, owner: UUID, shared: bool) -> int:
+        """Apply the choice to everything the caller already uploaded; returns how many rows changed."""
+        with self.transaction(owner) as connection:
+            # Rows that already match are skipped so a repeated request rewrites nothing.
+            return connection.execute("UPDATE public.detections SET compartida=%(shared)s WHERE user_id=%(owner)s AND compartida<>%(shared)s",
+                                      {"shared": shared, "owner": owner}).rowcount
+
     def map(self, viewer: UUID, query: MapQuery) -> MapResponse:
         limit = get_settings().map_result_limit
         # Discarded detections stay private to their author; the map only shows usable indications.
+        # Unshared detections reach only their author: RLS already hides them, and the filter keeps them out even without it.
         # Site names are private too: RLS already hides foreign sites, and the CASE keeps them out even without it.
         with self.transaction(viewer) as connection:
             rows = connection.execute(
@@ -81,6 +90,7 @@ class DetectionRepository:
                     d.user_id = %(viewer)s AS own, CASE WHEN d.user_id = %(viewer)s THEN s.nombre END AS site_name
                 FROM public.detections d LEFT JOIN public.sites s ON s.id = d.site_id
                 WHERE d.estado <> %(discarded)s
+                  AND (d.compartida OR d.user_id = %(viewer)s)
                   AND ST_Intersects(d.ubicacion::geometry, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
                   AND (%(species)s::text IS NULL OR d.especie = %(species)s)
                   AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)

@@ -1,6 +1,6 @@
 """The caller's personal record: totals, species list and one species in detail.
 
-Detections are readable by every signed-in user (collective map), so each query filters by owner explicitly.
+Shared detections are readable by every signed-in user (collective map), so each query filters by owner explicitly.
 Discarded detections never count as presence.
 """
 from typing import Any, Final
