@@ -8,18 +8,25 @@ API de BirdNet Local: FastAPI desplegada como función Python en Vercel, con Pos
 |---|---|---|
 | `GET /v1/health` | Estado del servicio | No |
 | `GET /v1/model/latest` | Manifiesto vigente del modelo acústico | No |
-| `POST /v1/detections/batch` | Sincronización idempotente de la cola local | Sí |
+| `POST /v1/detections/batch` | Sincronización idempotente de la cola local; `shared` (por defecto `true`) indica si el canto se comparte en el mapa de todos | Sí |
 | `POST /v1/detections/{id}/audio-url` | URL firmada para subir audio dudoso a Storage | Sí |
-| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
+| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
 | `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
 | `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
 | `POST /v1/me/avatar-url` | URL firmada para subir la foto (WebP, máx. 200 000 bytes) al bucket privado | Sí |
+| `POST /v1/me/sharing` | Comparte o deja de compartir todas las detecciones propias ya subidas (`{"shared": bool}` → `{"updated": n}`, las que cambiaron) | Sí |
 | `GET /v1/me/summary?tz=` | Totales propios sin descartadas: detecciones, especies, sitios, primera y última, días activos | Sí |
 | `GET /v1/me/species` | Especies propias con detecciones, mejor confianza, primera y última y sitios | Sí |
-| `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~100 m y últimas detecciones (vacía si no hay) | Sí |
+| `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
 | `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio | Sí |
 | `GET /v1/export?site_id=` | Exportación CSV de un sitio | Sí |
+
+### Ubicación y mapa compartido
+
+- Las coordenadas llegan ya redondeadas a una cuadrícula de 4 decimales (~10 m; `LOCATION_GRID_DECIMALS`); con más decimales la API responde 422 y la base de datos vuelve a redondear por si acaso. Los valores de 3 decimales (~100 m) de clientes y filas anteriores siguen siendo válidos.
+- Cada persona decide si sus cantos aparecen en el mapa de todos (`detections.compartida`, por defecto sí). Una detección no compartida solo la lee su autor: lo imponen la consulta del mapa y la política RLS `detections_select_shared_or_own`. Su registro personal, las estadísticas del sitio y la exportación no cambian.
+- Reintentar la sincronización no modifica una detección ya guardada; para cambiar lo ya subido se usa `POST /v1/me/sharing`.
 
 ## Estructura
 
