@@ -114,12 +114,20 @@ def test_missing_and_tampered_tokens_are_rejected(api):
     assert repo.rows == {}
 
 
-@pytest.mark.parametrize("changes", [{"location": {"latitude": 4.678912, "longitude": -74.123}}, {"confidence": 0.4}, {"confidence": 0.6}, {"recorded_at": "2026-10-06T12:00:00"}, {"user_id": str(uuid4())}, {"location": None}, {"audio_path": "foreign/audio.wav"}])
+@pytest.mark.parametrize("changes", [{"location": {"latitude": 4.67891, "longitude": -74.123}}, {"location": {"latitude": 4.679, "longitude": -74.12345}}, {"confidence": 0.4}, {"confidence": 0.6}, {"recorded_at": "2026-10-06T12:00:00"}, {"user_id": str(uuid4())}, {"location": None}, {"audio_path": "foreign/audio.wav"}])
 def test_rejects_invalid_detection_boundaries(api, changes):
     client, repo, _, headers, _ = api
     response = client.post("/v1/detections/batch", json={"detections": [detection(**changes)]}, headers=headers())
     assert response.status_code == 422
     assert repo.rows == {}
+
+
+def test_accepts_the_location_grid_and_the_coarser_one_before_it(api):
+    client, repo, _, headers, _ = api
+    # Clients that still round to 3 decimals send points that lie on the 4-decimal grid too.
+    coarse, fine = detection(), detection(location={"latitude": 4.6789, "longitude": -74.1234})
+    assert client.post("/v1/detections/batch", json={"detections": [coarse, fine]}, headers=headers()).status_code == 200
+    assert repo.rows[coarse["id"]]["location"] == coarse["location"] and repo.rows[fine["id"]]["location"] == fine["location"]
 
 
 def test_foreign_uuid_conflict_does_not_acknowledge_or_partially_commit(api):

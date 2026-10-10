@@ -19,9 +19,11 @@ CONFIDENCE_CONFIRMED_FROM: Final = 0.80
 # Confidences are probabilities; the CHECK on `detections.confianza` enforces the same upper bound.
 MAX_CONFIDENCE: Final = 1.0
 
-# Privacy: coordinates are rounded to a ~100 m cell (10^-3 degrees) before they leave the device. The
-# database trigger `public.round_to_100m_grid` (initial migration) rounds to the same 3 decimals.
-LOCATION_GRID_DECIMALS: Final = 3
+# Privacy: the raw device reading never leaves the device; coordinates are first rounded to a ~10 m cell
+# (10^-4 degrees, about 11 m of latitude). The database function `public.round_to_location_grid` (migration
+# 20261010000000) rounds to the same 4 decimals. Points on the earlier 3-decimal grid lie on this one too,
+# so older rows and clients stay valid.
+LOCATION_GRID_DECIMALS: Final = 4
 # Float tolerance when checking that a coordinate already lies on that grid.
 LOCATION_GRID_TOLERANCE: Final = 1e-9
 MAX_LATITUDE: Final = 90.0

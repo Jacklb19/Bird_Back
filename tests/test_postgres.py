@@ -62,6 +62,26 @@ def test_rls_and_location_precision_are_enforced(database):
         assert location == (4.679, -74.123)
 
 
+def test_locations_are_stored_on_the_location_grid(database):
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.domain import LOCATION_GRID_DECIMALS
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, _ = database
+    fine = {"latitude": 4.6789, "longitude": -74.1234}
+    row = DetectionInput.model_validate(detection(location=fine))
+    repo.batch(owner, [row])
+    site = SiteRepository().create_site(owner, SiteInput(name="Humedal", location=fine))
+    assert (site.latitude, site.longitude) == (4.6789, -74.1234)
+    stored = "SELECT ST_Y(ubicacion::geometry),ST_X(ubicacion::geometry) FROM public.detections WHERE id=%s"
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        assert connection.execute(stored, (row.id,)).fetchone() == (4.6789, -74.1234)
+        # The trigger is the last line of defence: a raw reading written past the API is still rounded.
+        raw = (4.678912, -74.123456)
+        connection.execute("UPDATE public.detections SET ubicacion=ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography WHERE id=%s", (raw[1], raw[0], row.id))
+        assert connection.execute(stored, (row.id,)).fetchone() == tuple(round(value, LOCATION_GRID_DECIMALS) for value in raw)
+
+
 def test_audio_job_is_created_once(database):
     repo, owner, _ = database
     row = DetectionInput.model_validate(detection(confidence=0.6, status="provisional"))

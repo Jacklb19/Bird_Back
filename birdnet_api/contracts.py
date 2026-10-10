@@ -289,7 +289,7 @@ class SpeciesSite(StrictModel):
 
 
 class SpeciesCell(StrictModel):
-    """One ~100 m cell, the precision locations are stored with."""
+    """One cell of the location grid, the precision locations are stored with."""
     latitude: float
     longitude: float
     detections: int
