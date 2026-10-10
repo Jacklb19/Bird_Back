@@ -1,6 +1,6 @@
 """The caller's personal record: totals, species list and one species in detail.
 
-Detections are readable by every signed-in user (collective map), so each query filters by owner explicitly.
+Shared detections are readable by every signed-in user (collective map), so each query filters by owner explicitly.
 Discarded detections never count as presence.
 """
 from typing import Any, Final
@@ -64,7 +64,7 @@ class RecordRepository(DetectionRepository):
                 f"""SELECT s.id, s.nombre, count(*) AS n
                 FROM public.detections d JOIN public.sites s ON s.id = d.site_id
                 WHERE {OWN_SPECIES} GROUP BY s.id, s.nombre ORDER BY n DESC, s.nombre""", params).fetchall()
-            # Stored points are already rounded to the ~100 m grid, so grouping by them never reveals more.
+            # Stored points are already rounded to the location grid, so grouping by them never reveals more.
             cells = connection.execute(
                 f"""SELECT ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude, count(*) AS n
                 FROM public.detections d WHERE {OWN_SPECIES}

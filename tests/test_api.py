@@ -31,6 +31,12 @@ class MemoryRepository:
         self.last_query = query
         return MapResponse(detections=[], truncated=False)
 
+    def set_sharing(self, owner, shared):
+        changed = [row for row in self.rows.values() if row["owner"] == owner and row["shared"] != shared]
+        for row in changed:
+            row["shared"] = shared
+        return len(changed)
+
     def batch(self, owner, detections):
         with self.lock:
             rows = copy.deepcopy(self.rows)
@@ -114,12 +120,43 @@ def test_missing_and_tampered_tokens_are_rejected(api):
     assert repo.rows == {}
 
 
-@pytest.mark.parametrize("changes", [{"location": {"latitude": 4.678912, "longitude": -74.123}}, {"confidence": 0.4}, {"confidence": 0.6}, {"recorded_at": "2026-10-06T12:00:00"}, {"user_id": str(uuid4())}, {"location": None}, {"audio_path": "foreign/audio.wav"}])
+@pytest.mark.parametrize("changes", [{"location": {"latitude": 4.67891, "longitude": -74.123}}, {"location": {"latitude": 4.679, "longitude": -74.12345}}, {"confidence": 0.4}, {"confidence": 0.6}, {"recorded_at": "2026-10-06T12:00:00"}, {"user_id": str(uuid4())}, {"location": None}, {"audio_path": "foreign/audio.wav"}, {"shared": "no"}])
 def test_rejects_invalid_detection_boundaries(api, changes):
     client, repo, _, headers, _ = api
     response = client.post("/v1/detections/batch", json={"detections": [detection(**changes)]}, headers=headers())
     assert response.status_code == 422
     assert repo.rows == {}
+
+
+def test_accepts_the_location_grid_and_the_coarser_one_before_it(api):
+    client, repo, _, headers, _ = api
+    # Clients that still round to 3 decimals send points that lie on the 4-decimal grid too.
+    coarse, fine = detection(), detection(location={"latitude": 4.6789, "longitude": -74.1234})
+    assert client.post("/v1/detections/batch", json={"detections": [coarse, fine]}, headers=headers()).status_code == 200
+    assert repo.rows[coarse["id"]]["location"] == coarse["location"] and repo.rows[fine["id"]]["location"] == fine["location"]
+
+
+def test_detections_are_shared_unless_the_client_says_otherwise(api):
+    client, repo, _, headers, _ = api
+    default, kept = detection(), detection(shared=False)
+    assert client.post("/v1/detections/batch", json={"detections": [default, kept]}, headers=headers()).status_code == 200
+    assert (repo.rows[default["id"]]["shared"], repo.rows[kept["id"]]["shared"]) == (True, False)
+
+
+def test_sharing_switch_requires_session_and_changes_only_own_detections(api):
+    client, repo, _, headers, _ = api
+    stranger = uuid4()
+    client.post("/v1/detections/batch", json={"detections": [detection(), detection()]}, headers=headers())
+    client.post("/v1/detections/batch", json={"detections": [detection()]}, headers=headers(stranger))
+    assert client.post("/v1/me/sharing", json={"shared": False}).status_code == 401
+    for body in ({}, {"shared": None}, {"shared": "false"}, {"shared": 0}, {"shared": False, "user_id": str(stranger)}):
+        assert client.post("/v1/me/sharing", json=body, headers=headers()).status_code == 422
+    assert all(row["shared"] for row in repo.rows.values())
+    response = client.post("/v1/me/sharing", json={"shared": False}, headers=headers())
+    assert response.status_code == 200 and response.json() == {"updated": 2}
+    assert [row["shared"] for row in repo.rows.values() if row["owner"] == stranger] == [True]
+    # Repeating the choice is harmless and reports that nothing changed.
+    assert client.post("/v1/me/sharing", json={"shared": False}, headers=headers()).json() == {"updated": 0}
 
 
 def test_foreign_uuid_conflict_does_not_acknowledge_or_partially_commit(api):
