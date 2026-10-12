@@ -66,7 +66,12 @@ def test_requests_use_the_configured_limits(monkeypatch):
         manifest = client.get("/v1/model/latest").json()
         assert manifest["model_file"] == "https://cdn.example/models/birdnet_model.onnx"
         # The geographic model lives next to the acoustic one, so it resolves against the same base.
-        assert manifest["geo_model_file"] == "https://cdn.example/models/birdnet_geo_model.onnx"
+        assert manifest["geo_model_file"] == "https://cdn.example/models/birdnet_geo_model_v3.onnx"
+        # So do the resources of the second model, whose file comes in parts.
+        alternate = manifest["alternate"]
+        assert alternate["model_files"] == [f"https://cdn.example/models/birdnet_plus_model.part{part}.onnx" for part in (1, 2)]
+        assert alternate["labels_file"] == "https://cdn.example/models/birdnet_plus_labels.txt"
+        assert alternate["geo_model_file"] == "https://cdn.example/models/birdnet_plus_geo_model.onnx"
 
 
 def test_remote_manifest_comes_only_from_allowed_tls_hosts(monkeypatch):
