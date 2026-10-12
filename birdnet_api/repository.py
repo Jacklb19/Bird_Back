@@ -37,7 +37,7 @@ class DetectionRepository:
 
     def get_owned(self, owner: UUID, detection: UUID) -> dict[str, Any] | None:
         with self.transaction(owner) as connection:
-            return connection.execute("SELECT id, estado FROM public.detections WHERE id = %s AND user_id = %s", (detection, owner)).fetchone()
+            return connection.execute("SELECT id FROM public.detections WHERE id = %s AND user_id = %s", (detection, owner)).fetchone()
 
     def batch(self, owner: UUID, detections: list[DetectionInput]) -> BatchResponse:
         accepted: list[UUID] = []
@@ -61,14 +61,9 @@ class DetectionRepository:
                      "latitude": row.location.latitude, "srid": WGS84_SRID, "model_version": row.model_version, "shared": row.shared},
                 ).fetchone()
                 # A retry carries the species the model gave, which a later correction keeps in `especie_modelo`.
-                owned = connection.execute("SELECT id, coalesce(especie_modelo, especie) AS especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
+                owned = connection.execute("SELECT id, coalesce(especie_modelo, especie) AS especie, version_modelo FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
                 if not owned or owned["especie"] != row.species or owned["version_modelo"] != row.model_version:
                     raise_error(ErrorCode.DETECTION_ID_CONFLICT)
-                if row.audio_path:
-                    if owned["ruta_audio"] not in (None, row.audio_path):
-                        raise_error(ErrorCode.AUDIO_ID_CONFLICT)
-                    connection.execute("UPDATE public.detections SET ruta_audio=%s WHERE id=%s AND user_id=%s", (row.audio_path, row.id, owner))
-                    connection.execute("INSERT INTO public.verification_jobs(detection_id) VALUES (%s) ON CONFLICT (detection_id) DO NOTHING", (row.id,))
                 (accepted if inserted else existing).append(row.id)
         return BatchResponse(accepted_ids=accepted, existing_ids=existing)
 

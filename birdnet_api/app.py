@@ -12,8 +12,6 @@ from fastapi.responses import JSONResponse, Response
 
 from .auth import authenticate
 from .contracts import (
-    AudioInput,
-    AudioUpload,
     AvatarInput,
     AvatarUpload,
     BatchInput,
@@ -43,7 +41,7 @@ from .contracts import (
     StatsQuery,
     TimeZoneQuery,
 )
-from .domain import MAX_SPECIES_LENGTH, DbDetectionStatus, DetectionStatus, local_status
+from .domain import MAX_SPECIES_LENGTH, local_status
 from .errors import ErrorCode, error_response, raise_error
 from .manifest import load_manifest
 from .profiles import ProfileRepository
@@ -52,7 +50,7 @@ from .records import RecordRepository
 from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
 from .sites import SiteRepository
-from .storage import AudioStorage, AvatarStorage, RecordingStorage
+from .storage import AvatarStorage, RecordingStorage
 
 # Version prefix shared by every public route.
 API_PREFIX: Final = "/v1"
@@ -90,10 +88,6 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
-def storage() -> AudioStorage:
-    return AudioStorage()
-
-
 def profiles() -> ProfileRepository:
     return ProfileRepository()
 
@@ -124,7 +118,7 @@ async def invalid_configuration(_: Request, error: SettingsError) -> JSONRespons
 @app.middleware("http")
 async def bounded_body(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
     # The API never accepts audio, images or unbounded JSON bodies: files go straight to Storage. Only its own
-    # routes are bounded, so the fixture server of the browser tests can still take an upload in Storage's place.
+    # routes are bounded; whatever a test server mounts beside them is not part of the API.
     if request.method in BOUNDED_BODY_METHODS and request.url.path.startswith(API_PREFIX):
         try:
             limit = get_settings().max_metadata_body_bytes
@@ -141,27 +135,11 @@ async def bounded_body(request: Request, call_next: Callable[[Request], Awaitabl
 
 
 @router.post("/detections/batch", response_model=BatchResponse)
-def batch(payload: BatchInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository), audio: AudioStorage = Depends(storage)) -> BatchResponse:
+def batch(payload: BatchInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository)) -> BatchResponse:
     for row in payload.detections:
         if row.status != local_status(row.confidence):
             raise_error(ErrorCode.STATUS_CONFIDENCE_MISMATCH)
-        if row.audio_path:
-            if row.status != DetectionStatus.PROVISIONAL:
-                raise_error(ErrorCode.AUDIO_ONLY_FOR_PROVISIONAL)
-            if repo.get_owned(owner, row.id) is None:
-                raise_error(ErrorCode.DETECTION_NOT_SYNCHRONIZED)
-            audio.verify(owner, row.id, row.audio_path)
     return repo.batch(owner, payload.detections)
-
-
-@router.post("/detections/{detection_id}/audio-url", response_model=AudioUpload)
-def audio_url(detection_id: UUID, payload: AudioInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository), audio: AudioStorage = Depends(storage)) -> AudioUpload:
-    row = repo.get_owned(owner, detection_id)
-    if row is None:
-        raise_error(ErrorCode.DETECTION_NOT_FOUND)
-    if row["estado"] != DbDetectionStatus.PROVISIONAL:
-        raise_error(ErrorCode.UPLOAD_ONLY_FOR_PROVISIONAL)
-    return audio.sign(owner, detection_id)
 
 
 @router.patch("/detections/{detection_id}", response_model=ReviewedDetection)

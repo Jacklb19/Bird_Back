@@ -82,17 +82,6 @@ def test_locations_are_stored_on_the_location_grid(database):
         assert connection.execute(stored, (row.id,)).fetchone() == tuple(round(value, LOCATION_GRID_DECIMALS) for value in raw)
 
 
-def test_audio_job_is_created_once(database):
-    repo, owner, _ = database
-    row = DetectionInput.model_validate(detection(confidence=0.6, status="provisional"))
-    repo.batch(owner, [row])
-    row.audio_path = f"{owner}/{row.id}.wav"
-    for _ in range(5):
-        repo.batch(owner, [row])
-    with psycopg.connect(TEST_DATABASE_URL) as connection:
-        assert connection.execute("SELECT count(*) FROM public.verification_jobs WHERE detection_id=%s", (row.id,)).fetchone()[0] == 1
-
-
 def test_map_is_collective_filtered_and_hides_discarded(database):
     repo, owner, other = database
     bogota = DetectionInput.model_validate(detection(species="Turdus fuscater"))
@@ -205,7 +194,7 @@ def test_personal_record_counts_only_own_kept_detections(database):
     assert thrush.hours[18] == 1 and thrush.hours[22] == 1 and sum(thrush.hours) == 2
     assert [(s.name, s.detections) for s in thrush.sites] == [("Humedal", 1)]
     assert sum(c.detections for c in thrush.cells) == 2
-    assert [str(r.id) for r in thrush.recent] == [mine[1]["id"], mine[0]["id"]] and not thrush.recent[0].has_audio
+    assert [str(r.id) for r in thrush.recent] == [mine[1]["id"], mine[0]["id"]]
     assert records.species_record(owner, "Sturnella magna", "UTC").model_dump(include={"detections", "best_confidence", "recent", "sites", "cells"}) == \
         {"detections": 0, "best_confidence": None, "recent": [], "sites": [], "cells": []}
     assert records.summary(other, "UTC").sites == 0

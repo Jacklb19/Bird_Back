@@ -57,10 +57,9 @@ class Settings:
     supabase_auth_issuer: str | None
     supabase_jwt_secret: str | None
     jwks_timeout_seconds: float
-    # Private Storage buckets for audio, profile photos and saved recordings; `supabase_url` has no trailing slash.
+    # Private Storage buckets for profile photos and saved recordings; `supabase_url` has no trailing slash.
     supabase_url: str | None
     supabase_service_role_key: str | None
-    supabase_audio_bucket: str | None
     supabase_avatar_bucket: str
     supabase_recording_bucket: str
     recording_quota_bytes: int
@@ -98,7 +97,6 @@ class Settings:
             jwks_timeout_seconds=_positive_seconds(environ, "JWKS_TIMEOUT_SECONDS", DEFAULT_JWKS_TIMEOUT_SECONDS),
             supabase_url=supabase_url.rstrip("/") if supabase_url else None,
             supabase_service_role_key=_text(environ, "SUPABASE_SERVICE_ROLE_KEY"),
-            supabase_audio_bucket=_text(environ, "SUPABASE_AUDIO_BUCKET"),
             supabase_avatar_bucket=_text(environ, "SUPABASE_AVATAR_BUCKET") or DEFAULT_AVATAR_BUCKET,
             supabase_recording_bucket=_text(environ, "SUPABASE_RECORDING_BUCKET") or DEFAULT_RECORDING_BUCKET,
             recording_quota_bytes=_positive_int(environ, "RECORDING_QUOTA_BYTES", DEFAULT_RECORDING_QUOTA_BYTES),

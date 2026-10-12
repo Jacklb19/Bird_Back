@@ -9,7 +9,6 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/health` | Estado del servicio | No |
 | `GET /v1/model/latest` | Manifiesto vigente del modelo acústico | No |
 | `POST /v1/detections/batch` | Sincronización idempotente de la cola local; `shared` (por defecto `true`) indica si el canto se comparte en el mapa de todos | Sí |
-| `POST /v1/detections/{id}/audio-url` | URL firmada para subir audio dudoso a Storage | Sí |
 | `PATCH /v1/detections/{id}` | Revisión de una detección propia: `{"action": "confirm" \| "correct" \| "discard", "species"?}` (la especie, solo al corregir). Responde la especie vigente, la que dio el modelo si se corrigió, el estado y quién revisó | Sí |
 | `POST /v1/detections/{id}/recording-url` | URL firmada para subir la grabación de una detección propia (WebM, máx. 100 000 bytes) al bucket privado; 507 si la cuenta ya llenó su tope | Sí |
 | `PUT /v1/detections/{id}/recording` | Enlaza la grabación subida tras verificar su ruta y contenido (`{"recording_path"}`); responde el uso de la cuenta | Sí |
@@ -36,7 +35,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 
 ### Revisión y grabaciones
 
-- Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` distingue a la persona de la verificación en la nube. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
+- Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` registra quién revisó: hoy, siempre la persona. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
 - Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla.
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
@@ -44,9 +43,9 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 
 - `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorios y Storage).
   - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `recordings.py`: grabaciones guardadas y su tope; `sites.py`: sitios, estadísticas y CSV.
-  - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (audio WAV, foto WebP, grabación WebM) y borrado de grabaciones.
+  - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (foto WebP, grabación WebM) y borrado de grabaciones.
   - `settings.py`: configuración leída del entorno una sola vez y validada.
-  - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, formato WAV, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
+  - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, ventana de captura, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
   - `errors.py`: catálogo de errores con su código HTTP y mensaje.
   - `manifest.py`: carga del manifiesto del modelo (local o remoto desde los hosts permitidos).
 - `api/index.py`: punto de entrada de la función de Vercel.
@@ -85,8 +84,7 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `SUPABASE_AUTH_ISSUER` | Emisor de los tokens de sesión | — (503 al autenticar) |
 | `SUPABASE_JWT_SECRET` | Secreto de tokens HS256 heredados | — (solo JWKS) |
 | `JWKS_TIMEOUT_SECONDS` | Espera al descargar las claves públicas del emisor | `10` |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Acceso a Storage con la clave de servicio (audio dudoso y fotos de perfil) | — (503 al subir; perfil sin foto) |
-| `SUPABASE_AUDIO_BUCKET` | Bucket privado del audio dudoso | — (503 al subir audio) |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Acceso a Storage con la clave de servicio (fotos de perfil y grabaciones guardadas) | — (503 al subir; perfil sin foto) |
 | `SUPABASE_AVATAR_BUCKET` | Bucket privado de las fotos de perfil (lo crea la migración `20261008000000`) | `avatars` |
 | `SUPABASE_RECORDING_BUCKET` | Bucket privado de las grabaciones guardadas (lo crea la migración `20261011000000`) | `recordings` |
 | `RECORDING_QUOTA_BYTES` | Tope de grabaciones por cuenta | `52428800` (50 MiB) |

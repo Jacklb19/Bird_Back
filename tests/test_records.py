@@ -5,7 +5,7 @@ from tests.test_api import api  # noqa: F401  (fixture)
 
 
 def test_record_routes_validate_species_and_time_zone(api):  # noqa: F811
-    client, _, _, headers, _ = api
+    client, _, headers, _ = api
     calls = []
 
     class MemoryRecords:

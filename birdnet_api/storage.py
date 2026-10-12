@@ -1,21 +1,16 @@
 """Sign private uploads and downloads, and verify uploaded objects by their exact path and content before linking."""
 import logging
-import struct
 from typing import Final
 from uuid import UUID
 
 import httpx
 
-from .contracts import AudioUpload, AvatarUpload, RecordingUpload, RecordingUrl
+from .contracts import AvatarUpload, RecordingUpload, RecordingUrl
 from .domain import (
     AVATAR_URL_TTL_SECONDS,
-    EXPECTED_WAV_BYTES,
-    EXPECTED_WAV_HEADER,
     MAX_AVATAR_BYTES,
     MAX_RECORDING_BYTES,
     RECORDING_URL_TTL_SECONDS,
-    WAV_HEADER_LAYOUT,
-    audio_object_path,
     avatar_object_path,
     is_webm,
     is_webp,
@@ -100,30 +95,6 @@ class BucketStorage:
         if not isinstance(url, str) or not url.startswith(prefix):
             raise ValueError("Invalid storage response")
         return f"{self.base}{STORAGE_API_PATH}{url}"
-
-
-class AudioStorage(BucketStorage):
-    def __init__(self) -> None:
-        super().__init__(get_settings().supabase_audio_bucket)
-
-    @staticmethod
-    def path(owner: UUID, detection: UUID) -> str:
-        return audio_object_path(owner, detection)
-
-    def sign(self, owner: UUID, detection: UUID) -> AudioUpload:
-        path = self.path(owner, detection)
-        return AudioUpload(upload_url=self.sign_upload(path), audio_path=path)
-
-    def verify(self, owner: UUID, detection: UUID, path: str) -> None:
-        if path != self.path(owner, detection):
-            raise_error(ErrorCode.INVALID_AUDIO_PATH)
-        try:
-            content = self.read(path, EXPECTED_WAV_BYTES)
-            # The client records exactly one model window, so anything else is not one of its fragments.
-            if len(content) != EXPECTED_WAV_BYTES or struct.unpack_from(WAV_HEADER_LAYOUT, content) != EXPECTED_WAV_HEADER:
-                raise ValueError("Unsupported WAV")
-        except (httpx.HTTPError, ValueError):
-            raise_error(ErrorCode.AUDIO_NOT_VERIFIED)
 
 
 class AvatarStorage(BucketStorage):

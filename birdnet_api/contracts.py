@@ -7,22 +7,20 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .domain import (
-    AUDIO_CONTENT_TYPE,
     AVATAR_CONTENT_TYPE,
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
-    EXPECTED_WAV_BYTES,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
     LOCATION_GRID_TOLERANCE,
     MAX_ALIAS_LENGTH,
-    MAX_AUDIO_PATH_LENGTH,
     MAX_AVATAR_BYTES,
     MAX_CONFIDENCE,
     MAX_LATITUDE,
     MAX_LONGITUDE,
     MAX_MODEL_VERSION_LENGTH,
     MAX_RECORDING_BYTES,
+    MAX_RECORDING_PATH_LENGTH,
     MAX_SITE_NAME_LENGTH,
     MAX_SPECIES_LENGTH,
     MAX_SYNC_BATCH_SIZE,
@@ -91,7 +89,6 @@ class DetectionInput(StrictModel):
     recorded_at: AwareTimestamp
     location: Location
     model_version: str = Field(min_length=1, max_length=MAX_MODEL_VERSION_LENGTH)
-    audio_path: str | None = Field(default=None, max_length=MAX_AUDIO_PATH_LENGTH)
     site_id: UUID | None = None
     # Whether other people see it on the collective map. Clients that predate the choice shared everything.
     shared: bool = Field(default=True, strict=True)
@@ -106,33 +103,6 @@ class BatchResponse(StrictModel):
     existing_ids: list[UUID]
 
 
-class AudioInput(StrictModel):
-    """Declared upload: only one model window as WAV, the format the server verifies after upload."""
-    # Validators instead of Literal (which only takes literal expressions); the schema still publishes the single accepted value.
-    content_type: str = Field(strict=True, json_schema_extra={"const": AUDIO_CONTENT_TYPE})
-    size_bytes: int = Field(strict=True, json_schema_extra={"const": EXPECTED_WAV_BYTES})
-
-    @field_validator("content_type")
-    @classmethod
-    def require_wav(cls, value: str) -> str:
-        if value != AUDIO_CONTENT_TYPE:
-            raise ValueError(f"Only {AUDIO_CONTENT_TYPE} is accepted")
-        return value
-
-    @field_validator("size_bytes")
-    @classmethod
-    def require_window_size(cls, value: int) -> int:
-        if value != EXPECTED_WAV_BYTES:
-            raise ValueError(f"Audio must be exactly {EXPECTED_WAV_BYTES} bytes")
-        return value
-
-
-class AudioUpload(StrictModel):
-    """Signed Storage upload target and the object path the client reports back as `audio_path`."""
-    upload_url: str
-    audio_path: str
-
-
 class MapQuery(StrictModel):
     """Visible map area and optional filters; antimeridian-crossing boxes are not supported."""
     west: float = Field(ge=-MAX_LONGITUDE, le=MAX_LONGITUDE, allow_inf_nan=False)
@@ -145,7 +115,7 @@ class MapQuery(StrictModel):
 
 
 class MapDetection(StrictModel):
-    """Collective map row: never exposes the author or the audio path.
+    """Collective map row: never exposes the author or the path of a recording.
 
     Other people's rows appear only while their author shares them. `own` tells viewers which rows are theirs;
     `site_name` is filled only for those, since sites are private.
@@ -292,7 +262,7 @@ class RecordingUpload(StrictModel):
 
 
 class RecordingLink(StrictModel):
-    recording_path: str = Field(min_length=1, max_length=MAX_AUDIO_PATH_LENGTH)
+    recording_path: str = Field(min_length=1, max_length=MAX_RECORDING_PATH_LENGTH)
 
 
 class RecordingUrl(StrictModel):
@@ -387,7 +357,9 @@ class SpeciesDetection(StrictModel):
     confidence: float
     status: MapDetectionStatus
     site_id: UUID | None
-    has_audio: bool
+    # No detection carries a fragment any more. The field stays, always false, while versions of the app
+    # installed before the fragments were retired are in use: they drop any record that lacks it.
+    has_audio: bool = False
     has_recording: bool
     reviewed_by: Reviewer | None
 

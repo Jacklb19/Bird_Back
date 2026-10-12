@@ -19,7 +19,7 @@ def test_codes_raise_and_render_their_status_and_message():
 
 
 def test_api_responses_keep_the_detail_shape(api):  # noqa: F811
-    client, _, _, headers, _ = api
+    client, _, headers, _ = api
     area = {"west": -74.0, "south": 4.5, "east": -74.2, "north": 4.8}
     assert client.get("/v1/detections", params=area).json() == {"detail": ErrorCode.AUTH_REQUIRED.message}
     invalid = client.get("/v1/detections", params=area, headers=headers())

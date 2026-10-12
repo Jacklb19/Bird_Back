@@ -59,7 +59,7 @@ class MemoryRecordings:
 
 @pytest.fixture
 def recording_api(api, monkeypatch):  # noqa: F811
-    client, repo, _, headers, owner = api
+    client, repo, headers, owner = api
     monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-service-key")
     monkeypatch.setenv("RECORDING_QUOTA_BYTES", str(QUOTA))

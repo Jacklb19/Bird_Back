@@ -71,7 +71,7 @@ class RecordRepository(DetectionRepository):
                 FROM public.detections d WHERE {OWN_SPECIES}
                 GROUP BY latitude, longitude ORDER BY n DESC, latitude, longitude LIMIT %(cells)s""", params).fetchall()
             recent = connection.execute(
-                f"""SELECT d.id, d.momento, d.confianza, d.estado, d.site_id, d.ruta_audio IS NOT NULL AS has_audio,
+                f"""SELECT d.id, d.momento, d.confianza, d.estado, d.site_id,
                     d.ruta_grabacion IS NOT NULL AS has_recording, d.revisada_por
                 FROM public.detections d WHERE {OWN_SPECIES} ORDER BY d.momento DESC LIMIT %(recent)s""", params).fetchall()
         hourly = [0] * HOURS_PER_DAY
@@ -83,6 +83,6 @@ class RecordRepository(DetectionRepository):
             sites=[SpeciesSite(id=r["id"], name=r["nombre"], detections=r["n"]) for r in sites],
             cells=[SpeciesCell(latitude=r["latitude"], longitude=r["longitude"], detections=r["n"]) for r in cells],
             recent=[SpeciesDetection(id=r["id"], recorded_at=r["momento"], confidence=r["confianza"], status=DB_TO_API_STATUS[r["estado"]],
-                                     site_id=r["site_id"], has_audio=r["has_audio"], has_recording=r["has_recording"],
+                                     site_id=r["site_id"], has_recording=r["has_recording"],
                                      reviewed_by=DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else None) for r in recent],
         )
