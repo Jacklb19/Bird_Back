@@ -123,8 +123,9 @@ async def invalid_configuration(_: Request, error: SettingsError) -> JSONRespons
 
 @app.middleware("http")
 async def bounded_body(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-    # The API never accepts audio, images or unbounded JSON bodies: files go straight to Storage.
-    if request.method in BOUNDED_BODY_METHODS:
+    # The API never accepts audio, images or unbounded JSON bodies: files go straight to Storage. Only its own
+    # routes are bounded, so the fixture server of the browser tests can still take an upload in Storage's place.
+    if request.method in BOUNDED_BODY_METHODS and request.url.path.startswith(API_PREFIX):
         try:
             limit = get_settings().max_metadata_body_bytes
         except SettingsError as error:

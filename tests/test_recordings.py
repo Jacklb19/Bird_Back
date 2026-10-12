@@ -126,6 +126,11 @@ def test_recording_links_only_an_own_verified_clip(recording_api):
     assert played == {"url": f"https://project.supabase.co/storage/v1/object/sign/recordings/{path}?token=down", "expires_in": 600}
 
 
+def test_recording_link_body_is_bounded(recording_api):
+    client, _, _, headers, _, synchronized = recording_api
+    assert client.put(f"/v1/detections/{synchronized()}/recording", content=b" " * (128 * 1024 + 1), headers=headers()).status_code == 413
+
+
 def test_recordings_are_private_to_their_author(recording_api):
     client, saved, objects, headers, owner, synchronized = recording_api
     row = synchronized()
