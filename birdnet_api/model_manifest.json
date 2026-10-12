@@ -11,8 +11,8 @@
   "model_file": "birdnet_model.onnx",
   "updated_at": "2026-10-12",
   "geo_model_file": "birdnet_geo_model_v3.onnx",
-  "geo_sha256": "e34a70dca8d7bfbc95d37e58de270dd31acd2dae3213a8a647be0dd4b45fcce9",
-  "geo_size_bytes": 13660973,
+  "geo_sha256": "86e13ef9d7365e8c7d10753949224a021c191895861f886290aff1f4ce298cf8",
+  "geo_size_bytes": 13664490,
   "alternate": {
     "model_id": "birdnet-plus-v3.0-preview3.1",
     "variant": "global-10k-pruned-fp16-birds",
@@ -28,7 +28,7 @@
     ],
     "labels_file": "birdnet_plus_labels.txt",
     "geo_model_file": "birdnet_plus_geo_model.onnx",
-    "geo_sha256": "6916336fbff8eb425d6a59a86f7d95fa00b1852fdd6389023b82203e30bcb83b",
-    "geo_size_bytes": 13680181
+    "geo_sha256": "166cc707816a03288d1fe3c4b535f6665101828b878cd163d37e7a6e0aa7ec82",
+    "geo_size_bytes": 13680169
   }
 }
