@@ -4,7 +4,7 @@ from math import isclose
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .domain import (
     AUDIO_CONTENT_TYPE,
@@ -22,11 +22,16 @@ from .domain import (
     MAX_LATITUDE,
     MAX_LONGITUDE,
     MAX_MODEL_VERSION_LENGTH,
+    MAX_RECORDING_BYTES,
     MAX_SITE_NAME_LENGTH,
     MAX_SPECIES_LENGTH,
     MAX_SYNC_BATCH_SIZE,
     MAX_TIME_ZONE_LENGTH,
+    RECORDING_CONTENT_TYPE,
+    DetectionStatus,
     MapDetectionStatus,
+    ReviewAction,
+    Reviewer,
     StatsPeriod,
     SubmittedDetectionStatus,
     is_time_zone,
@@ -267,6 +272,74 @@ class AvatarUpload(StrictModel):
     avatar_path: str
 
 
+class RecordingInput(StrictModel):
+    """Declared recording upload: one compressed clip, within the bucket's size limit."""
+    content_type: str = Field(strict=True, json_schema_extra={"const": RECORDING_CONTENT_TYPE})
+    size_bytes: int = Field(strict=True, ge=1, le=MAX_RECORDING_BYTES)
+
+    @field_validator("content_type")
+    @classmethod
+    def require_webm(cls, value: str) -> str:
+        if value != RECORDING_CONTENT_TYPE:
+            raise ValueError(f"Only {RECORDING_CONTENT_TYPE} is accepted")
+        return value
+
+
+class RecordingUpload(StrictModel):
+    """Signed Storage upload target and the object path the client then links with PUT /detections/{id}/recording."""
+    upload_url: str
+    recording_path: str
+
+
+class RecordingLink(StrictModel):
+    recording_path: str = Field(min_length=1, max_length=MAX_AUDIO_PATH_LENGTH)
+
+
+class RecordingUrl(StrictModel):
+    """Short-lived link the owner plays the recording from."""
+    url: str
+    expires_in: int
+
+
+class RecordingUsage(StrictModel):
+    """What the caller's recordings take of the account's quota."""
+    recordings: int
+    bytes: int
+    limit_bytes: int
+
+
+class RecordingsDeleted(StrictModel):
+    deleted: int
+
+
+class ReviewInput(StrictModel):
+    """A person's verdict on one of their detections; a correction names the species actually heard."""
+    action: ReviewAction
+    species: str | None = Field(default=None, min_length=1, max_length=MAX_SPECIES_LENGTH)
+
+    @field_validator("species")
+    @classmethod
+    def trim_species(cls, value: str | None) -> str | None:
+        if value is not None and value != value.strip():
+            raise ValueError("Species must not have surrounding spaces")
+        return value
+
+    @model_validator(mode="after")
+    def species_only_for_correction(self) -> "ReviewInput":
+        if (self.action == ReviewAction.CORRECT) != (self.species is not None):
+            raise ValueError("A correction, and only a correction, names a species")
+        return self
+
+
+class ReviewedDetection(StrictModel):
+    """A detection after review: `model_species` is what the model said when a person corrected it."""
+    id: UUID
+    species: str
+    model_species: str | None
+    status: DetectionStatus
+    reviewed_by: Reviewer | None
+
+
 class TimeZoneQuery(StrictModel):
     """Same `tz` parameter and validation as the site statistics."""
     tz: TimeZoneName = Field(default_factory=_default_time_zone)
@@ -315,6 +388,8 @@ class SpeciesDetection(StrictModel):
     status: MapDetectionStatus
     site_id: UUID | None
     has_audio: bool
+    has_recording: bool
+    reviewed_by: Reviewer | None
 
 
 class SpeciesRecord(StrictModel):

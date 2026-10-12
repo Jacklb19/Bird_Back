@@ -37,6 +37,11 @@ class ErrorCode(Enum):
     AUDIO_NOT_VERIFIED = (HTTPStatus.UNPROCESSABLE_ENTITY, "Uploaded audio could not be verified")
     INVALID_AVATAR_PATH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid profile photo path")
     AVATAR_NOT_VERIFIED = (HTTPStatus.UNPROCESSABLE_ENTITY, "Uploaded profile photo could not be verified")
+    INVALID_RECORDING_PATH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid recording path")
+    RECORDING_NOT_VERIFIED = (HTTPStatus.UNPROCESSABLE_ENTITY, "Uploaded recording could not be verified")
+    RECORDING_NOT_FOUND = (HTTPStatus.NOT_FOUND, "Detection has no recording")
+    RECORDING_QUOTA_EXCEEDED = (HTTPStatus.INSUFFICIENT_STORAGE, "Recording quota of the account is full")
+    RECORDING_UNAVAILABLE = (HTTPStatus.BAD_GATEWAY, "Recording storage did not answer; retry later")
 
     def __init__(self, status: HTTPStatus, message: str) -> None:
         self.status = status

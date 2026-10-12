@@ -6,16 +6,20 @@ from uuid import UUID
 
 import httpx
 
-from .contracts import AudioUpload, AvatarUpload
+from .contracts import AudioUpload, AvatarUpload, RecordingUpload, RecordingUrl
 from .domain import (
     AVATAR_URL_TTL_SECONDS,
     EXPECTED_WAV_BYTES,
     EXPECTED_WAV_HEADER,
     MAX_AVATAR_BYTES,
+    MAX_RECORDING_BYTES,
+    RECORDING_URL_TTL_SECONDS,
     WAV_HEADER_LAYOUT,
     audio_object_path,
     avatar_object_path,
+    is_webm,
     is_webp,
+    recording_object_path,
 )
 from .errors import ErrorCode, raise_error
 from .settings import get_settings
@@ -29,6 +33,8 @@ SIGNED_DOWNLOAD_PATH: Final = "/object/sign/"
 SIGNED_DOWNLOAD_URL_FIELD: Final = "signedURL"
 SIGNED_DOWNLOAD_EXPIRY_FIELD: Final = "expiresIn"
 OBJECT_PATH: Final = "/object/"
+# Body field of a bulk removal: the object keys to delete from the bucket.
+REMOVE_KEYS_FIELD: Final = "prefixes"
 API_KEY_HEADER: Final = "apikey"
 # Object paths are deterministic, so a retry after a lost response (or a new photo) must be allowed to overwrite.
 UPSERT_HEADER: Final = "x-upsert"
@@ -81,6 +87,13 @@ class BucketStorage:
                 if len(content) > limit:
                     raise ValueError("Object exceeds expected length")
         return bytes(content)
+
+    def remove(self, paths: list[str]) -> None:
+        """Deletes the objects; one that is already gone is not an error. Raises httpx.HTTPError when Storage fails."""
+        if not paths:
+            return
+        with self.client() as client:
+            client.request("DELETE", f"{OBJECT_PATH}{self.bucket}", json={REMOVE_KEYS_FIELD: paths}).raise_for_status()
 
     def _absolute(self, url: object, prefix: str) -> str:
         # Only Storage-relative URLs are accepted, so a tampered response cannot send the client elsewhere.
@@ -140,3 +153,39 @@ class AvatarStorage(BucketStorage):
         except (httpx.HTTPError, KeyError, ValueError) as error:
             logger.warning("Profile photo could not be signed: %s", type(error).__name__)
             return None
+
+
+class RecordingStorage(BucketStorage):
+    """Recordings a person keeps in their account: private objects, played only through URLs signed for their owner."""
+
+    def __init__(self) -> None:
+        super().__init__(get_settings().supabase_recording_bucket)
+
+    def sign(self, owner: UUID, detection: UUID) -> RecordingUpload:
+        path = recording_object_path(owner, detection)
+        return RecordingUpload(upload_url=self.sign_upload(path), recording_path=path)
+
+    def verify(self, owner: UUID, detection: UUID, path: str) -> int:
+        """Size in bytes of the uploaded clip, once its path and content have been checked."""
+        if path != recording_object_path(owner, detection):
+            raise_error(ErrorCode.INVALID_RECORDING_PATH)
+        try:
+            # The bucket checks the declared type and size; the bytes themselves are checked here before linking.
+            content = self.read(path, MAX_RECORDING_BYTES)
+            if not is_webm(content):
+                raise ValueError("Unsupported recording")
+        except (httpx.HTTPError, ValueError):
+            raise_error(ErrorCode.RECORDING_NOT_VERIFIED)
+        return len(content)
+
+    def url(self, path: str) -> RecordingUrl:
+        try:
+            return RecordingUrl(url=self.sign_download(path, RECORDING_URL_TTL_SECONDS), expires_in=RECORDING_URL_TTL_SECONDS)
+        except (httpx.HTTPError, KeyError, ValueError):
+            raise_error(ErrorCode.RECORDING_UNAVAILABLE)
+
+    def delete(self, paths: list[str]) -> None:
+        try:
+            self.remove(paths)
+        except httpx.HTTPError:
+            raise_error(ErrorCode.RECORDING_UNAVAILABLE)

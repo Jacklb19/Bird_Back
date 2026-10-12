@@ -10,6 +10,12 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/model/latest` | Manifiesto vigente del modelo acústico | No |
 | `POST /v1/detections/batch` | Sincronización idempotente de la cola local; `shared` (por defecto `true`) indica si el canto se comparte en el mapa de todos | Sí |
 | `POST /v1/detections/{id}/audio-url` | URL firmada para subir audio dudoso a Storage | Sí |
+| `PATCH /v1/detections/{id}` | Revisión de una detección propia: `{"action": "confirm" \| "correct" \| "discard", "species"?}` (la especie, solo al corregir). Responde la especie vigente, la que dio el modelo si se corrigió, el estado y quién revisó | Sí |
+| `POST /v1/detections/{id}/recording-url` | URL firmada para subir la grabación de una detección propia (WebM, máx. 100 000 bytes) al bucket privado; 507 si la cuenta ya llenó su tope | Sí |
+| `PUT /v1/detections/{id}/recording` | Enlaza la grabación subida tras verificar su ruta y contenido (`{"recording_path"}`); responde el uso de la cuenta | Sí |
+| `GET /v1/detections/{id}/recording` | URL firmada temporal (10 min) para oír la grabación; solo su autor | Sí |
+| `DELETE /v1/detections/{id}/recording` | Borra la grabación de Storage y su enlace | Sí |
+| `GET /v1/me/recordings`, `DELETE /v1/me/recordings` | Uso (`recordings`, `bytes`, `limit_bytes`) y borrado de todas las grabaciones propias | Sí |
 | `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
 | `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
 | `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
@@ -28,11 +34,17 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - Cada persona decide si sus cantos aparecen en el mapa de todos (`detections.compartida`, por defecto sí). Una detección no compartida solo la lee su autor: lo imponen la consulta del mapa y la política RLS `detections_select_shared_or_own`. Su registro personal, las estadísticas del sitio y la exportación no cambian.
 - Reintentar la sincronización no modifica una detección ya guardada; para cambiar lo ya subido se usa `POST /v1/me/sharing`.
 
+### Revisión y grabaciones
+
+- Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` distingue a la persona de la verificación en la nube. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
+- Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla.
+- El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
+
 ## Estructura
 
 - `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorios y Storage).
-  - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `sites.py`: sitios, estadísticas y CSV.
-  - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (audio WAV, foto WebP).
+  - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `recordings.py`: grabaciones guardadas y su tope; `sites.py`: sitios, estadísticas y CSV.
+  - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (audio WAV, foto WebP, grabación WebM) y borrado de grabaciones.
   - `settings.py`: configuración leída del entorno una sola vez y validada.
   - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, formato WAV, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
   - `errors.py`: catálogo de errores con su código HTTP y mensaje.
@@ -76,6 +88,8 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Acceso a Storage con la clave de servicio (audio dudoso y fotos de perfil) | — (503 al subir; perfil sin foto) |
 | `SUPABASE_AUDIO_BUCKET` | Bucket privado del audio dudoso | — (503 al subir audio) |
 | `SUPABASE_AVATAR_BUCKET` | Bucket privado de las fotos de perfil (lo crea la migración `20261008000000`) | `avatars` |
+| `SUPABASE_RECORDING_BUCKET` | Bucket privado de las grabaciones guardadas (lo crea la migración `20261011000000`) | `recordings` |
+| `RECORDING_QUOTA_BYTES` | Tope de grabaciones por cuenta | `52428800` (50 MiB) |
 | `STORAGE_TIMEOUT_SECONDS` | Espera de cada petición a Storage | `20` |
 | `MODEL_MANIFEST_PATH` | Manifiesto local del modelo | `birdnet_api/model_manifest.json` |
 | `MODEL_MANIFEST_URL` | Manifiesto remoto (solo `https`); sustituye al local | — |

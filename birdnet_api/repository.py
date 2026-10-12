@@ -10,8 +10,8 @@ from psycopg import sql
 from psycopg.rows import dict_row
 
 from .auth import AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM
-from .contracts import BatchResponse, DetectionInput, MapDetection, MapQuery, MapResponse
-from .domain import API_TO_DB_STATUS, DB_TO_API_STATUS, WGS84_SRID, DbDetectionStatus
+from .contracts import BatchResponse, DetectionInput, MapDetection, MapQuery, MapResponse, ReviewedDetection
+from .domain import API_TO_DB_STATUS, DB_TO_API_REVIEWER, DB_TO_API_STATUS, WGS84_SRID, DbDetectionStatus, DbReviewer, ReviewAction
 from .errors import ErrorCode, raise_error
 from .settings import get_settings
 
@@ -60,7 +60,8 @@ class DetectionRepository:
                      "status": API_TO_DB_STATUS[row.status].value, "recorded_at": row.recorded_at, "longitude": row.location.longitude,
                      "latitude": row.location.latitude, "srid": WGS84_SRID, "model_version": row.model_version, "shared": row.shared},
                 ).fetchone()
-                owned = connection.execute("SELECT id, especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
+                # A retry carries the species the model gave, which a later correction keeps in `especie_modelo`.
+                owned = connection.execute("SELECT id, coalesce(especie_modelo, especie) AS especie, version_modelo, ruta_audio FROM public.detections WHERE id=%s AND user_id=%s", (row.id, owner)).fetchone()
                 if not owned or owned["especie"] != row.species or owned["version_modelo"] != row.model_version:
                     raise_error(ErrorCode.DETECTION_ID_CONFLICT)
                 if row.audio_path:
@@ -70,6 +71,37 @@ class DetectionRepository:
                     connection.execute("INSERT INTO public.verification_jobs(detection_id) VALUES (%s) ON CONFLICT (detection_id) DO NOTHING", (row.id,))
                 (accepted if inserted else existing).append(row.id)
         return BatchResponse(accepted_ids=accepted, existing_ids=existing)
+
+    def review(self, owner: UUID, detection: UUID, action: ReviewAction, species: str | None) -> ReviewedDetection | None:
+        """Applies a person's verdict to one of their detections; None when it is not theirs.
+
+        Confirming restores the species the model gave, and a correction back to that species is a confirmation,
+        so the state never says "corrected" about a detection that names what the model said. Repeating a verdict
+        changes nothing but its date.
+        """
+        params = {"id": detection, "owner": owner, "species": species, "person": DbReviewer.PERSON.value,
+                  "verified": DbDetectionStatus.VERIFIED.value, "corrected": DbDetectionStatus.CORRECTED.value,
+                  "discarded": DbDetectionStatus.DISCARDED.value}
+        with self.transaction(owner) as connection:
+            if action == ReviewAction.DISCARD:
+                row = connection.execute(
+                    """UPDATE public.detections SET estado = %(discarded)s, revisada_por = %(person)s, revisada_en = now()
+                    WHERE id = %(id)s AND user_id = %(owner)s RETURNING id, especie, especie_modelo, estado, revisada_por""", params).fetchone()
+            else:
+                # Every right-hand side reads the row as it was before the update.
+                row = connection.execute(
+                    """UPDATE public.detections SET
+                        especie = coalesce(%(species)s::text, especie_modelo, especie),
+                        especie_modelo = CASE WHEN coalesce(%(species)s::text, especie_modelo, especie) = coalesce(especie_modelo, especie)
+                            THEN NULL ELSE coalesce(especie_modelo, especie) END,
+                        estado = CASE WHEN coalesce(%(species)s::text, especie_modelo, especie) = coalesce(especie_modelo, especie)
+                            THEN %(verified)s ELSE %(corrected)s END,
+                        revisada_por = %(person)s, revisada_en = now()
+                    WHERE id = %(id)s AND user_id = %(owner)s RETURNING id, especie, especie_modelo, estado, revisada_por""", params).fetchone()
+        if row is None:
+            return None
+        return ReviewedDetection(id=row["id"], species=row["especie"], model_species=row["especie_modelo"],
+                                 status=DB_TO_API_STATUS[row["estado"]], reviewed_by=DB_TO_API_REVIEWER[row["revisada_por"]])
 
     def set_sharing(self, owner: UUID, shared: bool) -> int:
         """Apply the choice to everything the caller already uploaded; returns how many rows changed."""

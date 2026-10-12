@@ -178,6 +178,53 @@ def is_webp(content: bytes) -> bool:
     return content.startswith(WEBP_RIFF_ID) and content[WEBP_FORM_TYPE_OFFSET:WEBP_FORM_TYPE_OFFSET + len(WEBP_FORM_TYPE)] == WEBP_FORM_TYPE
 
 
+# Saved recording: the clip of one detection, compressed on the device (Opus in WebM), that its author chose to
+# keep in their account. Type, size and path match the `recordings` bucket limits and the CHECK
+# `detections_recording_owned` (migration 20261011000000).
+RECORDING_CONTENT_TYPE: Final = "audio/webm"
+# A three-second clip is some 12 kB at 32 kbit/s; the bound leaves room for a higher bitrate, not for other files.
+MAX_RECORDING_BYTES: Final = 100_000
+RECORDING_OBJECT_PATH_TEMPLATE: Final = "{owner}/{detection}.webm"
+# EBML signature that opens every WebM file.
+WEBM_SIGNATURE: Final = bytes.fromhex("1a45dfa3")
+# Lifetime of the signed URL a recording is played from; the client asks again after it.
+RECORDING_URL_TTL_SECONDS: Final = 600
+
+
+def recording_object_path(owner: UUID, detection: UUID) -> str:
+    return RECORDING_OBJECT_PATH_TEMPLATE.format(owner=owner, detection=detection)
+
+
+def is_webm(content: bytes) -> bool:
+    return content.startswith(WEBM_SIGNATURE)
+
+
+class ReviewAction(StrEnum):
+    """What a person can say about one of their detections after listening to it (RF-11)."""
+
+    CONFIRM = "confirm"
+    CORRECT = "correct"
+    DISCARD = "discard"
+
+
+class Reviewer(StrEnum):
+    """Who reviewed a detection, as the API reports it."""
+
+    PERSON = "person"
+    CLOUD = "cloud"
+
+
+class DbReviewer(StrEnum):
+    """Values stored in `detections.revisada_por`; the CHECK `detections_review_source` lists the same two."""
+
+    PERSON = "persona"
+    CLOUD = "nube"
+
+
+# Both vocabularies pair by member name, as the detection states do.
+DB_TO_API_REVIEWER: Final[Mapping[DbReviewer, Reviewer]] = MappingProxyType({stored: Reviewer[stored.name] for stored in DbReviewer})
+
+
 class ExportColumn(StrEnum):
     """CSV export columns, in file order; the names are part of the export contract."""
 
@@ -190,6 +237,9 @@ class ExportColumn(StrEnum):
     LONGITUDE = "longitude"
     MODEL_VERSION = "model_version"
     SITE = "site"
+    # Appended after the original columns so files exported before the review existed keep their layout.
+    MODEL_SPECIES = "model_species"
+    REVIEWED_BY = "reviewed_by"
 
 
 # Coordinates are exported with LOCATION_GRID_DECIMALS, the precision they are stored with.

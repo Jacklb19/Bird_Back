@@ -1,4 +1,4 @@
-"""Synchronization, map, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
+"""Synchronization, map, review, saved recordings, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -24,7 +24,15 @@ from .contracts import (
     OwnSpeciesList,
     Profile,
     ProfileInput,
+    RecordingInput,
+    RecordingLink,
+    RecordingsDeleted,
+    RecordingUpload,
+    RecordingUrl,
+    RecordingUsage,
     RecordSummary,
+    ReviewedDetection,
+    ReviewInput,
     SharingInput,
     SharingUpdate,
     Site,
@@ -39,11 +47,12 @@ from .domain import MAX_SPECIES_LENGTH, DbDetectionStatus, DetectionStatus, loca
 from .errors import ErrorCode, error_response, raise_error
 from .manifest import load_manifest
 from .profiles import ProfileRepository
+from .recordings import RecordingRepository
 from .records import RecordRepository
 from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
 from .sites import SiteRepository
-from .storage import AudioStorage, AvatarStorage
+from .storage import AudioStorage, AvatarStorage, RecordingStorage
 
 # Version prefix shared by every public route.
 API_PREFIX: Final = "/v1"
@@ -52,7 +61,7 @@ TRUNCATED_HEADER: Final = "X-Truncated"
 EXPORT_FILENAME_TEMPLATE: Final = "birdnet-{site_id}.csv"
 EXPORT_MEDIA_TYPE: Final = "text/csv; charset=utf-8"
 # Methods whose bodies are read into memory and therefore bounded by MAX_METADATA_BODY_BYTES.
-BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH"})
+BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT"})
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +104,14 @@ def avatars() -> AvatarStorage:
 
 def records() -> RecordRepository:
     return RecordRepository()
+
+
+def recordings() -> RecordingRepository:
+    return RecordingRepository()
+
+
+def clips() -> RecordingStorage:
+    return RecordingStorage()
 
 
 @app.exception_handler(SettingsError)
@@ -146,6 +163,55 @@ def audio_url(detection_id: UUID, payload: AudioInput, owner: UUID = Depends(aut
     return audio.sign(owner, detection_id)
 
 
+@router.patch("/detections/{detection_id}", response_model=ReviewedDetection)
+def review(detection_id: UUID, payload: ReviewInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository)) -> ReviewedDetection:
+    reviewed = repo.review(owner, detection_id, payload.action, payload.species)
+    if reviewed is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    return reviewed
+
+
+@router.post("/detections/{detection_id}/recording-url", response_model=RecordingUpload)
+def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository),
+                     saved: RecordingRepository = Depends(recordings), storage: RecordingStorage = Depends(clips)) -> RecordingUpload:
+    if repo.get_owned(owner, detection_id) is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    # Refused before the upload, so a full account does not spend the transfer; the link checks again.
+    if not saved.has_room(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
+        raise_error(ErrorCode.RECORDING_QUOTA_EXCEEDED)
+    return storage.sign(owner, detection_id)
+
+
+@router.put("/detections/{detection_id}/recording", response_model=RecordingUsage)
+def link_recording(detection_id: UUID, payload: RecordingLink, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository),
+                   saved: RecordingRepository = Depends(recordings), storage: RecordingStorage = Depends(clips)) -> RecordingUsage:
+    if repo.get_owned(owner, detection_id) is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    size = storage.verify(owner, detection_id, payload.recording_path)
+    saved.link(owner, detection_id, payload.recording_path, size, get_settings().recording_quota_bytes)
+    return recording_usage(owner, saved)
+
+
+@router.get("/detections/{detection_id}/recording", response_model=RecordingUrl)
+def recording_url(detection_id: UUID, owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
+                  storage: RecordingStorage = Depends(clips)) -> RecordingUrl:
+    path = saved.path(owner, detection_id)
+    if path is None:
+        raise_error(ErrorCode.RECORDING_NOT_FOUND)
+    return storage.url(path)
+
+
+@router.delete("/detections/{detection_id}/recording", status_code=HTTPStatus.NO_CONTENT)
+def delete_recording(detection_id: UUID, owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
+                     storage: RecordingStorage = Depends(clips)) -> None:
+    path = saved.path(owner, detection_id)
+    if path is None:
+        return
+    # The object goes first: if Storage fails the link stays and the request can be repeated.
+    storage.delete([path])
+    saved.unlink(owner, detection_id)
+
+
 @router.get("/detections", response_model=MapResponse)
 def detections(query: Annotated[MapQuery, Query()], viewer: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository)) -> MapResponse:
     if query.west > query.east or query.south > query.north:
@@ -179,6 +245,20 @@ def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: Avat
 def set_sharing(payload: SharingInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository)) -> SharingUpdate:
     # One switch covers what is already in the cloud; detections synchronized later carry their own `shared` value.
     return SharingUpdate(updated=repo.set_sharing(owner, payload.shared))
+
+
+@router.get("/me/recordings", response_model=RecordingUsage)
+def recording_usage(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings)) -> RecordingUsage:
+    count, size = saved.usage(owner)
+    return RecordingUsage(recordings=count, bytes=size, limit_bytes=get_settings().recording_quota_bytes)
+
+
+@router.delete("/me/recordings", response_model=RecordingsDeleted)
+def delete_recordings(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
+                      storage: RecordingStorage = Depends(clips)) -> RecordingsDeleted:
+    paths = saved.paths(owner)
+    storage.delete(paths)
+    return RecordingsDeleted(deleted=saved.unlink_all(owner, paths) if paths else 0)
 
 
 @router.get("/me/summary", response_model=RecordSummary)
