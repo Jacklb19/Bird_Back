@@ -41,7 +41,7 @@ class MemorySites:
 
 @pytest.fixture
 def site_api(api):  # noqa: F811
-    client, _, _, headers, owner = api
+    client, _, headers, owner = api
     repo = MemorySites()
     app.dependency_overrides[sites] = lambda: repo
     app.dependency_overrides[now] = lambda: NOW

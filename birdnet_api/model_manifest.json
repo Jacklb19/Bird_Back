@@ -9,8 +9,26 @@
   "size_bytes": 38727042,
   "labels_file": "labels.txt",
   "model_file": "birdnet_model.onnx",
-  "updated_at": "2026-10-08",
-  "geo_model_file": "birdnet_geo_model.onnx",
-  "geo_sha256": "588256a58792a4a364797d5d2d71d1786638e8129b5254b2a6ddc1abbc907d0d",
-  "geo_size_bytes": 16163671
+  "updated_at": "2026-10-12",
+  "geo_model_file": "birdnet_geo_model_v3.onnx",
+  "geo_sha256": "86e13ef9d7365e8c7d10753949224a021c191895861f886290aff1f4ce298cf8",
+  "geo_size_bytes": 13664490,
+  "alternate": {
+    "model_id": "birdnet-plus-v3.0-preview3.1",
+    "variant": "global-10k-pruned-fp16-birds",
+    "sample_rate": 32000,
+    "window_samples": 96000,
+    "window_seconds": 3.0,
+    "num_classes": 8923,
+    "sha256": "9fb2a7cbc1de8ab0581bbe210a6ab9e2776b9515b315d03575bfe2b8d0b0ba84",
+    "size_bytes": 66964393,
+    "model_files": [
+      "birdnet_plus_model.part1.onnx",
+      "birdnet_plus_model.part2.onnx"
+    ],
+    "labels_file": "birdnet_plus_labels.txt",
+    "geo_model_file": "birdnet_plus_geo_model.onnx",
+    "geo_sha256": "166cc707816a03288d1fe3c4b535f6665101828b878cd163d37e7a6e0aa7ec82",
+    "geo_size_bytes": 13680169
+  }
 }

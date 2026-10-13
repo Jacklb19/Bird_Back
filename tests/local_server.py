@@ -11,9 +11,7 @@ import psycopg
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from birdnet_api.app import app, storage
-from birdnet_api.domain import EXPECTED_WAV_BYTES
-from birdnet_api.storage import AudioStorage
+from birdnet_api.app import app
 from tests.prepare_database import TEST_DATABASE_URL
 
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
@@ -23,21 +21,7 @@ owner = UUID("00000000-0000-4000-8000-000000000004")
 with psycopg.connect(TEST_DATABASE_URL) as connection:
     connection.execute("INSERT INTO auth.users(id,email) VALUES (%s,'sprint4@example.invalid') ON CONFLICT DO NOTHING", (owner,))
 
-state = {"lose_ack": False, "fail_link": False, "upload_count": 0}
-uploads: dict[str, bytes] = {}
-
-
-class LocalAudioStorage(AudioStorage):
-    def sign(self, user, detection):
-        path = self.path(user, detection)
-        return {"upload_url": f"/api/test/upload/{path}", "audio_path": path}
-
-    def verify(self, user, detection, path):
-        if path != self.path(user, detection) or len(uploads.get(path, b"")) != EXPECTED_WAV_BYTES:
-            raise ValueError("Missing fixture upload")
-
-
-app.dependency_overrides[storage] = LocalAudioStorage
+state = {"lose_ack": False}
 
 
 @app.middleware("http")
@@ -68,14 +52,7 @@ def lose_ack():
     return {"ok": True}
 
 
-@app.put("/test/upload/{path:path}")
-async def upload(path: str, request: Request):
-    uploads[path] = await request.body()
-    state["upload_count"] += 1
-    return {"ok": True}
-
-
 @app.get("/test/counts")
 def counts():
     with psycopg.connect(TEST_DATABASE_URL) as connection:
-        return {"detections": connection.execute("SELECT count(*) FROM public.detections WHERE user_id=%s", (owner,)).fetchone()[0], "jobs": connection.execute("SELECT count(*) FROM public.verification_jobs JOIN public.detections ON detections.id=verification_jobs.detection_id WHERE user_id=%s", (owner,)).fetchone()[0], "uploads": state["upload_count"]}
+        return {"detections": connection.execute("SELECT count(*) FROM public.detections WHERE user_id=%s", (owner,)).fetchone()[0]}

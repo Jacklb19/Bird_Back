@@ -30,6 +30,11 @@ DEFAULT_MAP_RESULT_LIMIT: Final = 2000
 DEFAULT_EXPORT_ROW_LIMIT: Final = 20_000
 # Created by migration 20261008000000_profiles_and_avatars.sql.
 DEFAULT_AVATAR_BUCKET: Final = "avatars"
+# Created by migration 20261011000000_recordings_and_review.sql.
+DEFAULT_RECORDING_BUCKET: Final = "recordings"
+# Recordings one account may keep. Supabase's free plan gives the whole project 1 GB of Storage, shared with the
+# models, so this bound is what keeps a handful of accounts from filling it.
+DEFAULT_RECORDING_QUOTA_BYTES: Final = 50 * 1024 * 1024
 # Deployment region; used for statistics when the client sends no time zone.
 DEFAULT_TIME_ZONE: Final = "America/Bogota"
 # Vercel rejects function request bodies above 4.5 MB, so a larger metadata limit could never apply.
@@ -52,11 +57,12 @@ class Settings:
     supabase_auth_issuer: str | None
     supabase_jwt_secret: str | None
     jwks_timeout_seconds: float
-    # Private Storage buckets for audio and profile photos; `supabase_url` has no trailing slash.
+    # Private Storage buckets for profile photos and saved recordings; `supabase_url` has no trailing slash.
     supabase_url: str | None
     supabase_service_role_key: str | None
-    supabase_audio_bucket: str | None
     supabase_avatar_bucket: str
+    supabase_recording_bucket: str
+    recording_quota_bytes: int
     storage_timeout_seconds: float
     # Model manifest: the remote URL wins over the local file when set.
     model_manifest_path: Path
@@ -91,8 +97,9 @@ class Settings:
             jwks_timeout_seconds=_positive_seconds(environ, "JWKS_TIMEOUT_SECONDS", DEFAULT_JWKS_TIMEOUT_SECONDS),
             supabase_url=supabase_url.rstrip("/") if supabase_url else None,
             supabase_service_role_key=_text(environ, "SUPABASE_SERVICE_ROLE_KEY"),
-            supabase_audio_bucket=_text(environ, "SUPABASE_AUDIO_BUCKET"),
             supabase_avatar_bucket=_text(environ, "SUPABASE_AVATAR_BUCKET") or DEFAULT_AVATAR_BUCKET,
+            supabase_recording_bucket=_text(environ, "SUPABASE_RECORDING_BUCKET") or DEFAULT_RECORDING_BUCKET,
+            recording_quota_bytes=_positive_int(environ, "RECORDING_QUOTA_BYTES", DEFAULT_RECORDING_QUOTA_BYTES),
             storage_timeout_seconds=_positive_seconds(environ, "STORAGE_TIMEOUT_SECONDS", DEFAULT_STORAGE_TIMEOUT_SECONDS),
             model_manifest_path=Path(manifest_path) if manifest_path else BUNDLED_MODEL_MANIFEST,
             model_manifest_url=model_manifest_url,

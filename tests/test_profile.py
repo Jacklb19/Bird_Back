@@ -29,7 +29,7 @@ class MemoryProfiles:
 
 @pytest.fixture
 def profile_api(api, monkeypatch):  # noqa: F811
-    client, _, _, headers, owner = api
+    client, _, headers, owner = api
     monkeypatch.setenv("SUPABASE_URL", "https://project.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "test-service-key")
     # The client fixture already read the settings at startup.

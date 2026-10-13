@@ -82,17 +82,6 @@ def test_locations_are_stored_on_the_location_grid(database):
         assert connection.execute(stored, (row.id,)).fetchone() == tuple(round(value, LOCATION_GRID_DECIMALS) for value in raw)
 
 
-def test_audio_job_is_created_once(database):
-    repo, owner, _ = database
-    row = DetectionInput.model_validate(detection(confidence=0.6, status="provisional"))
-    repo.batch(owner, [row])
-    row.audio_path = f"{owner}/{row.id}.wav"
-    for _ in range(5):
-        repo.batch(owner, [row])
-    with psycopg.connect(TEST_DATABASE_URL) as connection:
-        assert connection.execute("SELECT count(*) FROM public.verification_jobs WHERE detection_id=%s", (row.id,)).fetchone()[0] == 1
-
-
 def test_map_is_collective_filtered_and_hides_discarded(database):
     repo, owner, other = database
     bogota = DetectionInput.model_validate(detection(species="Turdus fuscater"))
@@ -205,7 +194,7 @@ def test_personal_record_counts_only_own_kept_detections(database):
     assert thrush.hours[18] == 1 and thrush.hours[22] == 1 and sum(thrush.hours) == 2
     assert [(s.name, s.detections) for s in thrush.sites] == [("Humedal", 1)]
     assert sum(c.detections for c in thrush.cells) == 2
-    assert [str(r.id) for r in thrush.recent] == [mine[1]["id"], mine[0]["id"]] and not thrush.recent[0].has_audio
+    assert [str(r.id) for r in thrush.recent] == [mine[1]["id"], mine[0]["id"]]
     assert records.species_record(owner, "Sturnella magna", "UTC").model_dump(include={"detections", "best_confidence", "recent", "sites", "cells"}) == \
         {"detections": 0, "best_confidence": None, "recent": [], "sites": [], "cells": []}
     assert records.summary(other, "UTC").sites == 0
@@ -274,3 +263,60 @@ def test_unshared_detections_reach_only_their_author(database):
     shared.shared = True
     assert repo.batch(owner, [shared]).existing_ids == [shared.id]
     assert on_map(other) == {theirs.id}
+
+
+def test_review_keeps_the_model_species_and_survives_a_retry(database):
+    from birdnet_api.domain import ReviewAction
+    from birdnet_api.records import RecordRepository
+
+    repo, owner, other = database
+    row = DetectionInput.model_validate(detection(species="Turdus fuscater"))
+    repo.batch(owner, [row])
+    assert repo.review(other, row.id, ReviewAction.DISCARD, None) is None
+    corrected = repo.review(owner, row.id, ReviewAction.CORRECT, "Zonotrichia capensis")
+    assert (corrected.species, corrected.model_species, corrected.status, corrected.reviewed_by) == ("Zonotrichia capensis", "Turdus fuscater", "corrected", "person")
+    # A second correction still remembers what the model said, not the first correction.
+    again = repo.review(owner, row.id, ReviewAction.CORRECT, "Troglodytes aedon")
+    assert (again.species, again.model_species) == ("Troglodytes aedon", "Turdus fuscater")
+    # The phone retries the batch with the model's species: it is the same detection, not an identifier conflict.
+    assert repo.batch(owner, [row]).existing_ids == [row.id]
+    # Correcting back to the model's species is a confirmation.
+    back = repo.review(owner, row.id, ReviewAction.CORRECT, "Turdus fuscater")
+    assert (back.species, back.model_species, back.status) == ("Turdus fuscater", None, "verified")
+    repo.review(owner, row.id, ReviewAction.CORRECT, "Zonotrichia capensis")
+    confirmed = repo.review(owner, row.id, ReviewAction.CONFIRM, None)
+    assert (confirmed.species, confirmed.model_species, confirmed.status) == ("Turdus fuscater", None, "verified")
+    assert RecordRepository().species_record(owner, "Turdus fuscater", "UTC").recent[0].reviewed_by == "person"
+    discarded = repo.review(owner, row.id, ReviewAction.DISCARD, None)
+    assert (discarded.species, discarded.status) == ("Turdus fuscater", "discarded")
+    assert RecordRepository().species_record(owner, "Turdus fuscater", "UTC").detections == 0
+
+
+def test_recordings_respect_quota_and_ownership(database):
+    from birdnet_api.recordings import RecordingRepository
+    from birdnet_api.records import RecordRepository
+
+    repo, owner, other = database
+    saved = RecordingRepository()
+    rows = [DetectionInput.model_validate(detection()) for _ in range(2)]
+    repo.batch(owner, rows)
+    first, second = (f"{owner}/{row.id}.webm" for row in rows)
+    saved.link(owner, rows[0].id, first, 600, 1000)
+    assert saved.has_room(owner, rows[1].id, 400, 1000) and not saved.has_room(owner, rows[1].id, 401, 1000)
+    with pytest.raises(HTTPException) as error:
+        saved.link(owner, rows[1].id, second, 401, 1000)
+    assert error.value.status_code == 507
+    # Replacing a detection's own clip does not count it twice.
+    saved.link(owner, rows[0].id, first, 1000, 1000)
+    assert saved.usage(owner) == (1, 1000)
+    assert [row.has_recording for row in RecordRepository().species_record(owner, rows[0].species, "UTC").recent].count(True) == 1
+    # Another account neither links to the detection nor sees its clip.
+    with pytest.raises(HTTPException) as error:
+        saved.link(other, rows[0].id, f"{other}/{rows[0].id}.webm", 10, 1000)
+    assert error.value.status_code == 404
+    assert saved.path(other, rows[0].id) is None and saved.usage(other) == (0, 0) and saved.unlink_all(other, [first]) == 0
+    # The constraint is the last line of defence: a clip can only live in its owner's folder, with its size.
+    with psycopg.connect(TEST_DATABASE_URL) as connection, pytest.raises(psycopg.errors.CheckViolation):
+        connection.execute("UPDATE public.detections SET ruta_grabacion=%s, bytes_grabacion=10 WHERE id=%s", (f"{other}/{rows[1].id}.webm", rows[1].id))
+    assert saved.unlink_all(owner, saved.paths(owner)) == 1
+    assert saved.usage(owner) == (0, 0)

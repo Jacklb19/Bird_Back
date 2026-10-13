@@ -9,14 +9,14 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 
 def test_routes_live_at_the_api_root(api):
-    client, _, _, _, _ = api
+    client, _, _, _ = api
     assert client.get("/v1/health").json() == {"status": "ok"}
     assert client.get("/v1/model/latest").status_code == 200
 
 
 def test_shipped_manifest_is_complete():
     manifest = json.loads((BACKEND / "birdnet_api" / "model_manifest.json").read_text(encoding="utf-8-sig"))
-    # The bundled model must take the window the client records and the server verifies.
+    # The bundled model must take the window the client records.
     assert manifest["sample_rate"] == AUDIO_SAMPLE_RATE_HZ and manifest["window_samples"] == AUDIO_WINDOW_SAMPLES
     assert manifest["num_classes"] > 0 and len(manifest["sha256"]) == 64
 

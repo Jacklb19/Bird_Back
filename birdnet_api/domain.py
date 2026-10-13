@@ -3,7 +3,6 @@
 The web client mirrors these values in `src/config/contract.ts`; changing one side without the other makes
 the server reject records the client considers valid, so keep both in step.
 """
-import struct
 from collections.abc import Mapping
 from enum import StrEnum
 from types import MappingProxyType
@@ -34,7 +33,7 @@ WGS84_SRID: Final = 4326
 # Field length limits. Species, model version and site name mirror FIELD_LIMITS in the client.
 MAX_SPECIES_LENGTH: Final = 200
 MAX_MODEL_VERSION_LENGTH: Final = 200
-MAX_AUDIO_PATH_LENGTH: Final = 300
+MAX_RECORDING_PATH_LENGTH: Final = 300
 MAX_SITE_NAME_LENGTH: Final = 80
 # Profile name; the CHECK `profiles_alias_length` (migration 20261008000000) enforces the same bound.
 MAX_ALIAS_LENGTH: Final = 40
@@ -122,39 +121,11 @@ def is_time_zone(name: str) -> bool:
     return True
 
 
-# Audio fragment format: one analysis window of the model as mono 16-bit PCM WAV. The sample rate and window
-# length are the model's input (model_manifest.json: sample_rate, window_samples, window_seconds).
+# Capture window of the client: three seconds at the sample rate the bundled model takes. The API handles no audio
+# samples itself; the shipped model_manifest.json (sample_rate, window_samples) is checked against these values.
 AUDIO_SAMPLE_RATE_HZ: Final = 48_000
 AUDIO_WINDOW_SECONDS: Final = 3
-AUDIO_CHANNELS: Final = 1
-AUDIO_BITS_PER_SAMPLE: Final = 16
 AUDIO_WINDOW_SAMPLES: Final = AUDIO_SAMPLE_RATE_HZ * AUDIO_WINDOW_SECONDS
-BITS_PER_BYTE: Final = 8
-AUDIO_BLOCK_ALIGN: Final = AUDIO_CHANNELS * (AUDIO_BITS_PER_SAMPLE // BITS_PER_BYTE)
-AUDIO_BYTE_RATE: Final = AUDIO_SAMPLE_RATE_HZ * AUDIO_BLOCK_ALIGN
-AUDIO_DATA_BYTES: Final = AUDIO_WINDOW_SAMPLES * AUDIO_BLOCK_ALIGN
-
-# Canonical 44-byte header: RIFF id, RIFF size, "WAVE", "fmt ", fmt size, format, channels, sample rate,
-# byte rate, block align, bits per sample, "data", data size.
-WAV_HEADER_LAYOUT: Final = "<4sI4s4sIHHIIHH4sI"
-WAV_HEADER_BYTES: Final = struct.calcsize(WAV_HEADER_LAYOUT)
-# The RIFF size excludes the RIFF id and the size field itself.
-WAV_RIFF_PREAMBLE_BYTES: Final = 8
-WAV_PCM_FMT_CHUNK_BYTES: Final = 16
-WAV_PCM_FORMAT: Final = 1
-EXPECTED_WAV_BYTES: Final = WAV_HEADER_BYTES + AUDIO_DATA_BYTES
-EXPECTED_WAV_HEADER: Final = (
-    b"RIFF", EXPECTED_WAV_BYTES - WAV_RIFF_PREAMBLE_BYTES, b"WAVE", b"fmt ", WAV_PCM_FMT_CHUNK_BYTES, WAV_PCM_FORMAT,
-    AUDIO_CHANNELS, AUDIO_SAMPLE_RATE_HZ, AUDIO_BYTE_RATE, AUDIO_BLOCK_ALIGN, AUDIO_BITS_PER_SAMPLE, b"data", AUDIO_DATA_BYTES,
-)
-AUDIO_CONTENT_TYPE: Final = "audio/wav"
-AUDIO_FILE_EXTENSION: Final = "wav"
-# Storage object key of a detection's audio; the client checks the path the API returns against the same rule.
-AUDIO_OBJECT_PATH_TEMPLATE: Final = "{owner}/{detection}.{extension}"
-
-
-def audio_object_path(owner: UUID, detection: UUID) -> str:
-    return AUDIO_OBJECT_PATH_TEMPLATE.format(owner=owner, detection=detection, extension=AUDIO_FILE_EXTENSION)
 
 
 # Profile photo: one WebP per user, overwritten on change. Size and type match the `avatars` bucket limits and
@@ -178,6 +149,55 @@ def is_webp(content: bytes) -> bool:
     return content.startswith(WEBP_RIFF_ID) and content[WEBP_FORM_TYPE_OFFSET:WEBP_FORM_TYPE_OFFSET + len(WEBP_FORM_TYPE)] == WEBP_FORM_TYPE
 
 
+# Saved recording: the clip of one detection, compressed on the device (Opus in WebM), that its author chose to
+# keep in their account. Type, size and path match the `recordings` bucket limits and the CHECK
+# `detections_recording_owned` (migration 20261011000000).
+RECORDING_CONTENT_TYPE: Final = "audio/webm"
+# A three-second clip is some 12 kB at 32 kbit/s; the bound leaves room for a higher bitrate, not for other files.
+MAX_RECORDING_BYTES: Final = 100_000
+RECORDING_OBJECT_PATH_TEMPLATE: Final = "{owner}/{detection}.webm"
+# EBML signature that opens every WebM file.
+WEBM_SIGNATURE: Final = bytes.fromhex("1a45dfa3")
+# Lifetime of the signed URL a recording is played from; the client asks again after it.
+RECORDING_URL_TTL_SECONDS: Final = 600
+
+
+def recording_object_path(owner: UUID, detection: UUID) -> str:
+    return RECORDING_OBJECT_PATH_TEMPLATE.format(owner=owner, detection=detection)
+
+
+def is_webm(content: bytes) -> bool:
+    return content.startswith(WEBM_SIGNATURE)
+
+
+class ReviewAction(StrEnum):
+    """What a person can say about one of their detections after listening to it (RF-11)."""
+
+    CONFIRM = "confirm"
+    CORRECT = "correct"
+    DISCARD = "discard"
+
+
+class Reviewer(StrEnum):
+    """Who reviewed a detection, as the API reports it."""
+
+    PERSON = "person"
+
+
+class DbReviewer(StrEnum):
+    """Values stored in `detections.revisada_por`.
+
+    The CHECK `detections_review_source` also admits "nube", for a cloud verifier that was never built: no code
+    path writes it.
+    """
+
+    PERSON = "persona"
+
+
+# Both vocabularies pair by member name, as the detection states do.
+DB_TO_API_REVIEWER: Final[Mapping[DbReviewer, Reviewer]] = MappingProxyType({stored: Reviewer[stored.name] for stored in DbReviewer})
+
+
 class ExportColumn(StrEnum):
     """CSV export columns, in file order; the names are part of the export contract."""
 
@@ -190,6 +210,9 @@ class ExportColumn(StrEnum):
     LONGITUDE = "longitude"
     MODEL_VERSION = "model_version"
     SITE = "site"
+    # Appended after the original columns so files exported before the review existed keep their layout.
+    MODEL_SPECIES = "model_species"
+    REVIEWED_BY = "reviewed_by"
 
 
 # Coordinates are exported with LOCATION_GRID_DECIMALS, the precision they are stored with.

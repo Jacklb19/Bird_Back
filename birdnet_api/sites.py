@@ -10,6 +10,7 @@ import psycopg
 from .contracts import Site, SiteInput, SiteStats, SpeciesStat
 from .domain import (
     CONFIDENCE_EXPORT_DECIMALS,
+    DB_TO_API_REVIEWER,
     DB_TO_API_STATUS,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
@@ -89,7 +90,7 @@ class SiteRepository(DetectionRepository):
             self._require_site(connection, site_id)
             rows = connection.execute(
                 """SELECT d.id, d.especie, d.confianza, d.estado, d.momento, ST_Y(d.ubicacion::geometry) AS latitude,
-                    ST_X(d.ubicacion::geometry) AS longitude, d.version_modelo, s.nombre
+                    ST_X(d.ubicacion::geometry) AS longitude, d.version_modelo, s.nombre, d.especie_modelo, d.revisada_por
                 FROM public.detections d JOIN public.sites s ON s.id = d.site_id
                 WHERE d.site_id = %(site)s AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s) AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
                 ORDER BY d.momento LIMIT %(fetch)s""",
@@ -110,5 +111,7 @@ class SiteRepository(DetectionRepository):
                 ExportColumn.LONGITUDE: f"{r['longitude']:.{LOCATION_GRID_DECIMALS}f}",
                 ExportColumn.MODEL_VERSION: r["version_modelo"],
                 ExportColumn.SITE: r["nombre"],
+                ExportColumn.MODEL_SPECIES: r["especie_modelo"] or "",
+                ExportColumn.REVIEWED_BY: DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else "",
             })
         return out.getvalue(), len(rows) > limit
