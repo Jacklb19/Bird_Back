@@ -36,6 +36,10 @@ class ErrorCode(Enum):
     RECORDING_NOT_FOUND = (HTTPStatus.NOT_FOUND, "Detection has no recording")
     RECORDING_QUOTA_EXCEEDED = (HTTPStatus.INSUFFICIENT_STORAGE, "Recording quota of the account is full")
     RECORDING_UNAVAILABLE = (HTTPStatus.BAD_GATEWAY, "Recording storage did not answer; retry later")
+    WALK_NOT_FOUND = (HTTPStatus.NOT_FOUND, "Walk not found")
+    WALK_ID_CONFLICT = (HTTPStatus.CONFLICT, "Walk identifier conflict")
+    WALK_QUOTA_EXCEEDED = (HTTPStatus.INSUFFICIENT_STORAGE, "Walk quota of the account is full")
+    EXPORT_SCOPE_INVALID = (HTTPStatus.UNPROCESSABLE_ENTITY, "Export either a site or a walk, not both")
 
     def __init__(self, status: HTTPStatus, message: str) -> None:
         self.status = status

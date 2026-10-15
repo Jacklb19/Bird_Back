@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from birdnet_api.contracts import DetectionInput, MapQuery
+from birdnet_api.exports import ExportRepository
 from birdnet_api.repository import DetectionRepository
 from tests.prepare_database import TEST_DATABASE_URL
 from tests.test_api import detection
@@ -126,8 +127,11 @@ def test_sites_stats_and_batch_site_ownership(database):
     with pytest.raises(HTTPException) as error:
         sites.stats(other, mine.id, "all", None, None, now, "UTC")
     assert error.value.status_code == 404
-    body, truncated = sites.export_csv(owner, mine.id, None, None)
+    body, truncated = ExportRepository().export_csv(owner, mine.id, None, None, None)
     assert body.count("\n") == 5 and not truncated
+    with pytest.raises(HTTPException) as error:
+        ExportRepository().export_csv(other, mine.id, None, None, None)
+    assert error.value.status_code == 404
 
 
 def test_profiles_are_private_and_bounded(database):
@@ -248,7 +252,10 @@ def test_unshared_detections_reach_only_their_author(database):
     # The author keeps everything: map marker, site statistics, export and personal record.
     assert next(row.own for row in repo.map(owner, area).detections if row.id == kept.id)
     assert sites.stats(owner, site.id, "all", None, None, datetime(2026, 10, 10, tzinfo=UTC), "UTC").detections == 1
-    assert str(kept.id) in sites.export_csv(owner, site.id, None, None)[0]
+    assert str(kept.id) in ExportRepository().export_csv(owner, site.id, None, None, None)[0]
+    # The whole record exports only the caller's own rows, never shared ones of other people.
+    everything = ExportRepository().export_csv(owner, None, None, None, None)[0]
+    assert str(kept.id) in everything and str(shared.id) in everything and str(theirs.id) not in everything
     assert RecordRepository().summary(owner, "UTC").detections == 2
 
     # The switch changes every row of the caller and nobody else's.
@@ -320,3 +327,80 @@ def test_recordings_respect_quota_and_ownership(database):
         connection.execute("UPDATE public.detections SET ruta_grabacion=%s, bytes_grabacion=10 WHERE id=%s", (f"{other}/{rows[1].id}.webm", rows[1].id))
     assert saved.unlink_all(owner, saved.paths(owner)) == 1
     assert saved.usage(owner) == (0, 0)
+
+
+def test_walks_are_private_idempotent_and_counted_from_reviewed_songs(database):
+    from birdnet_api.contracts import WalkInput
+    from birdnet_api.domain import ReviewAction
+    from birdnet_api.walks import WalkRepository
+
+    repo, owner, other = database
+    walks = WalkRepository()
+    walk_id = uuid4()
+    walk = WalkInput.model_validate({"name": "Humedal", "started_at": "2026-10-06T11:00:00Z", "ended_at": "2026-10-06T13:00:00Z",
+                                     "track": [[4.679, -74.123, 0], [4.680, -74.123, 300], [4.680, -74.124, 900]]})
+    heard = [detection(recorded_at="2026-10-06T11:30:00Z"), detection(recorded_at="2026-10-06T12:00:00Z"),
+             detection(species="Sturnella magna", recorded_at="2026-10-06T12:10:00Z"),
+             detection(species="Pyrocephalus rubinus", recorded_at="2026-10-06T12:20:00Z", location={"latitude": 4.68, "longitude": -74.124})]
+    before = detection(recorded_at="2026-10-06T10:59:59Z")
+    repo.batch(owner, [DetectionInput.model_validate(row) for row in [*heard, before]])
+    repo.batch(other, [DetectionInput.model_validate(detection(recorded_at="2026-10-06T12:00:00Z"))])
+    repo.review(owner, heard[2]["id"], ReviewAction.DISCARD, None)
+    repo.review(owner, heard[3]["id"], ReviewAction.CORRECT, "Zonotrichia capensis")
+
+    saved = walks.save(owner, walk_id, walk, quota=1)
+    assert saved.points == 3 and saved.distance_m == pytest.approx(111.195 + 110.85, abs=0.5)
+    # Discarded songs and other people's never count; a correction counts as the bird the person heard.
+    assert saved.detections == 3
+    assert [(s.species, s.detections) for s in saved.species] == [("Turdus fuscater", 2), ("Zonotrichia capensis", 1)]
+    assert walks.save(owner, walk_id, walk, quota=1) == saved
+    detail = walks.detail(owner, walk_id)
+    assert detail.track == walk.track
+    assert {(p.species, p.latitude, p.longitude, p.detections) for p in detail.places} == {
+        ("Turdus fuscater", 4.679, -74.123, 2), ("Zonotrichia capensis", 4.68, -74.124, 1)}
+
+    # The quota refuses a new walk, never the same one again.
+    with pytest.raises(HTTPException) as error:
+        walks.save(owner, uuid4(), walk, quota=1)
+    assert error.value.status_code == 507
+    # Another person can neither take the identifier nor read, change or delete the walk, even past the API.
+    with pytest.raises(HTTPException) as error:
+        walks.save(other, walk_id, walk, quota=10)
+    assert error.value.status_code == 409
+    assert walks.detail(other, walk_id) is None and walks.page(other, None, 10).walks == [] and walks.rename(other, walk_id, "Mía") is None
+    with repo.transaction(other) as connection:
+        assert connection.execute("SELECT count(*) AS n FROM public.walks").fetchone()["n"] == 0
+        assert connection.execute("UPDATE public.walks SET nombre='forged' WHERE id=%s", (walk_id,)).rowcount == 0
+        assert connection.execute("DELETE FROM public.walks WHERE id=%s", (walk_id,)).rowcount == 0
+    walks.delete(other, walk_id)
+    assert walks.usage(owner) == 1
+
+    # The walk's CSV holds its period only, discarded songs included with their state.
+    body, _ = ExportRepository().export_csv(owner, None, walk_id, None, None)
+    assert body.count("\n") == 5 and "discarded" in body and before["id"] not in body
+    with pytest.raises(HTTPException) as error:
+        ExportRepository().export_csv(other, None, walk_id, None, None)
+    assert error.value.status_code == 404
+
+    assert walks.rename(owner, walk_id, "Al alba").name == "Al alba"
+    assert [w.id for w in walks.page(owner, None, 10).walks] == [walk_id]
+    assert walks.page(owner, walk.started_at, 10).walks == []
+    # Deleting the walk keeps its songs.
+    assert walks.delete_all(owner) == 1 and walks.usage(owner) == 0
+    assert stored_detections(owner) == 5
+
+
+def stored_detections(owner):
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        return connection.execute("SELECT count(*) FROM public.detections WHERE user_id=%s", (owner,)).fetchone()[0]
+
+
+def test_walk_rows_reject_paths_beyond_their_bounds(database):
+    repo, owner, _ = database
+    for name, path in (("x" * 81, "[]"), ("Bien", '{"a": 1}'), ("Bien", "[" + ",".join(["[4.6,-74.1]"] * 2001) + "]")):
+        with pytest.raises(HTTPException), repo.transaction(owner) as connection:
+            connection.execute("INSERT INTO public.walks (id,user_id,nombre,inicio,fin,recorrido) VALUES (%s,%s,%s,now(),now(),%s::jsonb)",
+                               (uuid4(), owner, name, path))
+    with pytest.raises(HTTPException), repo.transaction(owner) as connection:
+        connection.execute("INSERT INTO public.walks (id,user_id,nombre,inicio,fin) VALUES (%s,%s,'Bien',now(),now() - interval '1 second')",
+                           (uuid4(), owner))

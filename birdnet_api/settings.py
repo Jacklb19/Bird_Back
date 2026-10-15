@@ -35,6 +35,9 @@ DEFAULT_RECORDING_BUCKET: Final = "recordings"
 # Recordings one account may keep. Supabase's free plan gives the whole project 1 GB of Storage, shared with the
 # models, so this bound is what keeps a handful of accounts from filling it.
 DEFAULT_RECORDING_QUOTA_BYTES: Final = 50 * 1024 * 1024
+# Walks one account may keep (ADR-35). A full path takes under 100 kB in the database, so a full account stays
+# under 20 MB of the free plan's 500 MB.
+DEFAULT_WALK_QUOTA: Final = 200
 # Deployment region; used for statistics when the client sends no time zone.
 DEFAULT_TIME_ZONE: Final = "America/Bogota"
 # Vercel rejects function request bodies above 4.5 MB, so a larger metadata limit could never apply.
@@ -63,6 +66,7 @@ class Settings:
     supabase_avatar_bucket: str
     supabase_recording_bucket: str
     recording_quota_bytes: int
+    walk_quota: int
     storage_timeout_seconds: float
     # Model manifest: the remote URL wins over the local file when set.
     model_manifest_path: Path
@@ -100,6 +104,7 @@ class Settings:
             supabase_avatar_bucket=_text(environ, "SUPABASE_AVATAR_BUCKET") or DEFAULT_AVATAR_BUCKET,
             supabase_recording_bucket=_text(environ, "SUPABASE_RECORDING_BUCKET") or DEFAULT_RECORDING_BUCKET,
             recording_quota_bytes=_positive_int(environ, "RECORDING_QUOTA_BYTES", DEFAULT_RECORDING_QUOTA_BYTES),
+            walk_quota=_positive_int(environ, "WALK_QUOTA", DEFAULT_WALK_QUOTA),
             storage_timeout_seconds=_positive_seconds(environ, "STORAGE_TIMEOUT_SECONDS", DEFAULT_STORAGE_TIMEOUT_SECONDS),
             model_manifest_path=Path(manifest_path) if manifest_path else BUNDLED_MODEL_MANIFEST,
             model_manifest_url=model_manifest_url,

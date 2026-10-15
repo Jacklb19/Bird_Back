@@ -4,12 +4,13 @@ from math import isclose
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from .domain import (
     AVATAR_CONTENT_TYPE,
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
+    DEFAULT_WALK_PAGE,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
     LOCATION_GRID_TOLERANCE,
@@ -25,7 +26,11 @@ from .domain import (
     MAX_SPECIES_LENGTH,
     MAX_SYNC_BATCH_SIZE,
     MAX_TIME_ZONE_LENGTH,
+    MAX_WALK_NAME_LENGTH,
+    MAX_WALK_PAGE,
+    MAX_WALK_POINTS,
     RECORDING_CONTENT_TYPE,
+    WALK_TIME_TOLERANCE_SECONDS,
     DetectionStatus,
     MapDetectionStatus,
     ReviewAction,
@@ -69,6 +74,12 @@ def _collapse_spaces(value: object) -> object:
     return " ".join(value.split()) if isinstance(value, str) else value
 
 
+def _require_grid(value: float) -> float:
+    if not isclose(value, round(value, LOCATION_GRID_DECIMALS), abs_tol=LOCATION_GRID_TOLERANCE, rel_tol=0):
+        raise ValueError("Location must already be approximate")
+    return value
+
+
 class Location(StrictModel):
     latitude: float = Field(ge=-MAX_LATITUDE, le=MAX_LATITUDE, allow_inf_nan=False)
     longitude: float = Field(ge=-MAX_LONGITUDE, le=MAX_LONGITUDE, allow_inf_nan=False)
@@ -76,9 +87,7 @@ class Location(StrictModel):
     @field_validator("latitude", "longitude")
     @classmethod
     def require_approximation(cls, value: float) -> float:
-        if not isclose(value, round(value, LOCATION_GRID_DECIMALS), abs_tol=LOCATION_GRID_TOLERANCE, rel_tol=0):
-            raise ValueError("Location must already be approximate")
-        return value
+        return _require_grid(value)
 
 
 class DetectionInput(StrictModel):
@@ -199,7 +208,9 @@ class SiteStats(StrictModel):
 
 
 class ExportQuery(StrictModel):
-    site_id: UUID
+    """What to export: one site, one walk, or (without either) all the caller's records."""
+    site_id: UUID | None = None
+    walk_id: UUID | None = None
     since: AwareTimestamp | None = None
     until: AwareTimestamp | None = None
 
@@ -375,3 +386,93 @@ class SpeciesRecord(StrictModel):
     sites: list[SpeciesSite]
     cells: list[SpeciesCell]
     recent: list[SpeciesDetection]
+
+
+GridLatitude = Annotated[float, Field(ge=-MAX_LATITUDE, le=MAX_LATITUDE, allow_inf_nan=False), AfterValidator(_require_grid)]
+GridLongitude = Annotated[float, Field(ge=-MAX_LONGITUDE, le=MAX_LONGITUDE, allow_inf_nan=False), AfterValidator(_require_grid)]
+# A cell of a walk's path: [latitude, longitude], plus the seconds since the walk started on walks recorded since
+# they carry it. Only cells of the location grid are accepted, never a raw reading.
+TrackPoint = tuple[GridLatitude, GridLongitude] | tuple[GridLatitude, GridLongitude, Annotated[int, Field(ge=0)]]
+WalkName = Annotated[str, BeforeValidator(_collapse_spaces), Field(min_length=1, max_length=MAX_WALK_NAME_LENGTH)]
+
+
+class WalkInput(StrictModel):
+    """A finished walk as the phone uploads it; repeating the same upload stores nothing new."""
+    name: WalkName
+    started_at: AwareTimestamp
+    ended_at: AwareTimestamp
+    track: list[TrackPoint] = Field(max_length=MAX_WALK_POINTS)
+
+    @model_validator(mode="after")
+    def require_consistent_period(self) -> "WalkInput":
+        if self.ended_at < self.started_at:
+            raise ValueError("A walk cannot end before it starts")
+        timed = [len(point) == 3 for point in self.track]
+        if any(timed) and not all(timed):
+            raise ValueError("Either every point of a path has its time or none has")
+        times = [point[2] for point in self.track if len(point) == 3]
+        if any(later < earlier for earlier, later in zip(times, times[1:], strict=False)):
+            raise ValueError("Point times must not go back")
+        if times and times[-1] > (self.ended_at - self.started_at).total_seconds() + WALK_TIME_TOLERANCE_SECONDS:
+            raise ValueError("A point cannot come after the end of its walk")
+        return self
+
+
+class WalkRename(StrictModel):
+    name: WalkName
+
+
+class WalkPageQuery(StrictModel):
+    """Newest first; `before` is the start of the last walk already received."""
+    before: AwareTimestamp | None = None
+    limit: int = Field(default=DEFAULT_WALK_PAGE, ge=1, le=MAX_WALK_PAGE)
+
+
+class WalkSpecies(StrictModel):
+    species: str
+    detections: int
+    best_confidence: float
+
+
+class Walk(StrictModel):
+    """A saved walk with figures computed from its path and from the caller's detections within its period.
+
+    Discarded detections never count, and a corrected one counts as the species the person heard.
+    """
+    id: UUID
+    name: str
+    started_at: datetime
+    ended_at: datetime
+    distance_m: float
+    points: int
+    detections: int
+    species: list[WalkSpecies]
+
+
+class WalkPage(StrictModel):
+    walks: list[Walk]
+    has_more: bool
+
+
+class WalkPlace(StrictModel):
+    """Where one species was heard during a walk: one cell of the location grid."""
+    species: str
+    latitude: float
+    longitude: float
+    detections: int
+    best_confidence: float
+    first_recorded_at: datetime
+
+
+class WalkDetail(Walk):
+    track: list[TrackPoint]
+    places: list[WalkPlace]
+
+
+class WalkUsage(StrictModel):
+    walks: int
+    limit: int
+
+
+class WalksDeleted(StrictModel):
+    deleted: int
