@@ -397,8 +397,11 @@ WalkName = Annotated[str, BeforeValidator(_collapse_spaces), Field(min_length=1,
 
 
 class WalkInput(StrictModel):
-    """A finished walk as the phone uploads it; repeating the same upload stores nothing new."""
-    name: WalkName
+    """A finished walk as the phone uploads it; repeating the same upload stores nothing new.
+
+    Without a name the app shows one built from the walk's date, in the language of whoever reads it.
+    """
+    name: WalkName | None = None
     started_at: AwareTimestamp
     ended_at: AwareTimestamp
     track: list[TrackPoint] = Field(max_length=MAX_WALK_POINTS)
@@ -419,7 +422,8 @@ class WalkInput(StrictModel):
 
 
 class WalkRename(StrictModel):
-    name: WalkName
+    """A new name; null goes back to the one built from the date."""
+    name: WalkName | None
 
 
 class WalkPageQuery(StrictModel):
@@ -440,7 +444,7 @@ class Walk(StrictModel):
     Discarded detections never count, and a corrected one counts as the species the person heard.
     """
     id: UUID
-    name: str
+    name: str | None
     started_at: datetime
     ended_at: datetime
     distance_m: float

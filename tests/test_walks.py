@@ -119,8 +119,9 @@ def test_walk_upload_is_idempotent_and_private(walk_api):
     assert body["name"] == "Paseo al humedal" and body["points"] == 3 and body["distance_m"] > 0
     assert client.put(f"/v1/walks/{walk_id}", json=walk(), headers=headers()).json() == body
     # Walks recorded before points had times still upload, without them.
-    legacy = client.put(f"/v1/walks/{uuid4()}", json=walk(track=[[4.6789, -74.1234], [4.679, -74.1234]]), headers=headers())
-    assert legacy.status_code == 200
+    legacy = client.put(f"/v1/walks/{uuid4()}", json={k: v for k, v in walk(track=[[4.6789, -74.1234], [4.679, -74.1234]]).items() if k != "name"},
+                        headers=headers())
+    assert legacy.status_code == 200 and legacy.json()["name"] is None
     assert client.put(f"/v1/walks/{walk_id}", json=walk(), headers=headers(user=uuid4())).status_code == 409
     assert client.get(f"/v1/walks/{walk_id}", headers=headers(user=uuid4())).status_code == 404
     detail = client.get(f"/v1/walks/{walk_id}", headers=headers()).json()
@@ -141,6 +142,8 @@ def test_walk_quota_rename_and_delete(walk_api):
     assert renamed.status_code == 200 and renamed.json()["name"] == "Al alba"
     assert client.patch(f"/v1/walks/{uuid4()}", json={"name": "Otra"}, headers=headers()).status_code == 404
     assert client.patch(f"/v1/walks/{ids[0]}", json={"name": ""}, headers=headers()).status_code == 422
+    assert client.patch(f"/v1/walks/{ids[0]}", json={}, headers=headers()).status_code == 422
+    assert client.patch(f"/v1/walks/{ids[0]}", json={"name": None}, headers=headers()).json()["name"] is None
     assert client.delete(f"/v1/walks/{ids[0]}", headers=headers()).status_code == 204
     assert client.delete(f"/v1/walks/{ids[0]}", headers=headers()).status_code == 204
     assert client.delete("/v1/me/walks", headers=headers()).json() == {"deleted": 1}

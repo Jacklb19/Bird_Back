@@ -78,7 +78,7 @@ class WalkRepository(DetectionRepository):
             raise_error(ErrorCode.WALK_NOT_FOUND)
         return saved
 
-    def rename(self, owner: UUID, walk_id: UUID, name: str) -> Walk | None:
+    def rename(self, owner: UUID, walk_id: UUID, name: str | None) -> Walk | None:
         with self.transaction(owner) as connection:
             updated = connection.execute("UPDATE public.walks SET nombre = %s WHERE id = %s AND user_id = %s", (name, walk_id, owner)).rowcount
             return self._read(connection, owner, walk_id) if updated else None

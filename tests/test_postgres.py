@@ -383,6 +383,7 @@ def test_walks_are_private_idempotent_and_counted_from_reviewed_songs(database):
     assert error.value.status_code == 404
 
     assert walks.rename(owner, walk_id, "Al alba").name == "Al alba"
+    assert walks.rename(owner, walk_id, None).name is None
     assert [w.id for w in walks.page(owner, None, 10).walks] == [walk_id]
     assert walks.page(owner, walk.started_at, 10).walks == []
     # Deleting the walk keeps its songs.

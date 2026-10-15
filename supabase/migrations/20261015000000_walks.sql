@@ -9,7 +9,8 @@ create table if not exists public.walks (
   -- Generated on the phone, so a repeated upload of the same walk is recognized (idempotent synchronization).
   id uuid primary key,
   user_id uuid not null references public.profiles(id) on delete cascade,
-  nombre text not null,
+  -- Null until the person names the walk; the app then shows one built from its date, in the person's language.
+  nombre text,
   inicio timestamptz not null,
   fin timestamptz not null,
   -- Cells of the ~10 m location grid in walking order, as [latitude, longitude] or [latitude, longitude, seconds
@@ -19,7 +20,7 @@ create table if not exists public.walks (
   distancia_m double precision not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint walks_name_length check (char_length(nombre) between 1 and 80),
+  constraint walks_name_length check (nombre is null or char_length(nombre) between 1 and 80),
   constraint walks_period check (fin >= inicio),
   constraint walks_path_shape check (jsonb_typeof(recorrido) = 'array' and jsonb_array_length(recorrido) <= 2000),
   constraint walks_distance check (distancia_m >= 0)
