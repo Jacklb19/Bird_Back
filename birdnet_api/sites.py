@@ -1,6 +1,4 @@
 """Monitoring sites and their statistics; every query runs under the owner's RLS context."""
-import csv
-import io
 from datetime import datetime
 from typing import Any
 from uuid import UUID
@@ -9,20 +7,14 @@ import psycopg
 
 from .contracts import Site, SiteInput, SiteStats, SpeciesStat
 from .domain import (
-    CONFIDENCE_EXPORT_DECIMALS,
-    DB_TO_API_REVIEWER,
-    DB_TO_API_STATUS,
     HOURS_PER_DAY,
-    LOCATION_GRID_DECIMALS,
     MAX_MISSING_SPECIES,
     WGS84_SRID,
     DbDetectionStatus,
-    ExportColumn,
     StatsPeriod,
 )
 from .errors import ErrorCode, raise_error
 from .repository import DetectionRepository
-from .settings import get_settings
 
 
 class SiteRepository(DetectionRepository):
@@ -83,35 +75,3 @@ class SiteRepository(DetectionRepository):
             species=[SpeciesStat(species=r["especie"], detections=r["n"], days=r["days"], first_seen=first_seen[r["especie"]],
                                  is_new=since is not None and first_seen[r["especie"]] >= since) for r in species],
         )
-
-    def export_csv(self, owner: UUID, site_id: UUID, since: datetime | None, until: datetime | None) -> tuple[str, bool]:
-        limit = get_settings().export_row_limit
-        with self.transaction(owner) as connection:
-            self._require_site(connection, site_id)
-            rows = connection.execute(
-                """SELECT d.id, d.especie, d.confianza, d.estado, d.momento, ST_Y(d.ubicacion::geometry) AS latitude,
-                    ST_X(d.ubicacion::geometry) AS longitude, d.version_modelo, s.nombre, d.especie_modelo, d.revisada_por
-                FROM public.detections d JOIN public.sites s ON s.id = d.site_id
-                WHERE d.site_id = %(site)s AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s) AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
-                ORDER BY d.momento LIMIT %(fetch)s""",
-                # One extra row tells whether the export was cut at the limit.
-                {"site": site_id, "since": since, "until": until, "fetch": limit + 1},
-            ).fetchall()
-        out = io.StringIO()
-        writer = csv.DictWriter(out, fieldnames=list(ExportColumn))
-        writer.writeheader()
-        for r in rows[:limit]:
-            writer.writerow({
-                ExportColumn.ID: r["id"],
-                ExportColumn.SPECIES: r["especie"],
-                ExportColumn.CONFIDENCE: f"{r['confianza']:.{CONFIDENCE_EXPORT_DECIMALS}f}",
-                ExportColumn.STATUS: DB_TO_API_STATUS[r["estado"]],
-                ExportColumn.RECORDED_AT: r["momento"].isoformat(),
-                ExportColumn.LATITUDE: f"{r['latitude']:.{LOCATION_GRID_DECIMALS}f}",
-                ExportColumn.LONGITUDE: f"{r['longitude']:.{LOCATION_GRID_DECIMALS}f}",
-                ExportColumn.MODEL_VERSION: r["version_modelo"],
-                ExportColumn.SITE: r["nombre"],
-                ExportColumn.MODEL_SPECIES: r["especie_modelo"] or "",
-                ExportColumn.REVIEWED_BY: DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else "",
-            })
-        return out.getvalue(), len(rows) > limit

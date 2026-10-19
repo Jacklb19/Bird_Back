@@ -25,7 +25,13 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
 | `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio | Sí |
-| `GET /v1/export?site_id=` | Exportación CSV de un sitio | Sí |
+| `PUT /v1/walks/{id}` | Guarda una caminata terminada (`name` opcional, `started_at`, `ended_at`, `track` con celdas `[lat, lon]` o `[lat, lon, segundos]`, hasta 2000). Idempotente con el UUID del teléfono; responde el resumen. 409 si el identificador es de otra cuenta, 507 si la cuenta llenó su tope | Sí |
+| `PATCH /v1/walks/{id}` | Cambia el nombre (`{"name"}`; `null` vuelve al que la app arma con la fecha) | Sí |
+| `GET /v1/walks?before=&limit=` | Caminatas propias, de la más reciente a la más antigua, con distancia, puntos y especies; `has_more` indica si hay otra página | Sí |
+| `GET /v1/walks/{id}` | Una caminata con su recorrido y los lugares donde se oyó cada especie (celdas de ~10 m) | Sí |
+| `DELETE /v1/walks/{id}` | Borra la caminata (sus cantos quedan); repetirlo no falla | Sí |
+| `GET /v1/me/walks`, `DELETE /v1/me/walks` | Uso (`walks`, `limit`) y borrado de todas las caminatas propias | Sí |
+| `GET /v1/export?site_id=` o `?walk_id=` | Exportación CSV de un sitio, de una caminata o, sin ninguno de los dos, de todo el registro propio | Sí |
 
 ### Ubicación y mapa compartido
 
@@ -39,10 +45,16 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla.
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
+### Caminatas
+
+- Solo se suben si la persona eligió guardarlas en su cuenta (ADR-35). Son privadas: RLS solo del dueño y ninguna consulta del mapa las lee.
+- El recorrido solo admite celdas de la cuadrícula de ~10 m; la distancia la calcula la API con la misma fórmula que el teléfono.
+- Las especies no se copian: son las detecciones propias entre el inicio y el fin, sin las descartadas y con las correcciones aplicadas, así que una revisión posterior cambia también la caminata. El tope por cuenta (`WALK_QUOTA`) solo rechaza caminatas nuevas.
+
 ## Estructura
 
 - `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorios y Storage).
-  - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `recordings.py`: grabaciones guardadas y su tope; `sites.py`: sitios, estadísticas y CSV.
+  - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `recordings.py`: grabaciones guardadas y su tope; `sites.py`: sitios y estadísticas; `walks.py`: caminatas guardadas; `exports.py`: CSV.
   - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (foto WebP, grabación WebM) y borrado de grabaciones.
   - `settings.py`: configuración leída del entorno una sola vez y validada.
   - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, ventana de captura, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
@@ -88,6 +100,7 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `SUPABASE_AVATAR_BUCKET` | Bucket privado de las fotos de perfil (lo crea la migración `20261008000000`) | `avatars` |
 | `SUPABASE_RECORDING_BUCKET` | Bucket privado de las grabaciones guardadas (lo crea la migración `20261011000000`) | `recordings` |
 | `RECORDING_QUOTA_BYTES` | Tope de grabaciones por cuenta | `52428800` (50 MiB) |
+| `WALK_QUOTA` | Tope de caminatas guardadas por cuenta | `200` |
 | `STORAGE_TIMEOUT_SECONDS` | Espera de cada petición a Storage | `20` |
 | `MODEL_MANIFEST_PATH` | Manifiesto local del modelo | `birdnet_api/model_manifest.json` |
 | `MODEL_MANIFEST_URL` | Manifiesto remoto (solo `https`); sustituye al local | — |
@@ -95,7 +108,7 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `MODEL_MANIFEST_TIMEOUT_SECONDS` | Espera al descargar el manifiesto remoto | `10` |
 | `MAX_MANIFEST_BYTES` | Tamaño máximo del manifiesto remoto | `131072` |
 | `MODEL_RESOURCE_BASE_URL` | Base de `model_file` y `labels_file` relativos | `/models/` |
-| `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
+| `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST`, `PATCH` o `PUT` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
 | `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
 | `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
 | `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas y del registro personal si el cliente no envía `tz` | `America/Bogota` |

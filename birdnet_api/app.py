@@ -1,4 +1,4 @@
-"""Synchronization, map, review, saved recordings, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
+"""Synchronization, map, review, saved recordings, walks, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -40,9 +40,18 @@ from .contracts import (
     SpeciesRecord,
     StatsQuery,
     TimeZoneQuery,
+    Walk,
+    WalkDetail,
+    WalkInput,
+    WalkPage,
+    WalkPageQuery,
+    WalkRename,
+    WalksDeleted,
+    WalkUsage,
 )
 from .domain import MAX_SPECIES_LENGTH, local_status
 from .errors import ErrorCode, error_response, raise_error
+from .exports import ExportRepository
 from .manifest import load_manifest
 from .profiles import ProfileRepository
 from .recordings import RecordingRepository
@@ -51,12 +60,15 @@ from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
 from .sites import SiteRepository
 from .storage import AvatarStorage, RecordingStorage
+from .walks import WalkRepository
 
 # Version prefix shared by every public route.
 API_PREFIX: Final = "/v1"
 # Tells the client that the export stopped at EXPORT_ROW_LIMIT rows.
 TRUNCATED_HEADER: Final = "X-Truncated"
 EXPORT_FILENAME_TEMPLATE: Final = "birdnet-{site_id}.csv"
+WALK_EXPORT_FILENAME_TEMPLATE: Final = "trino-walk-{walk_id}.csv"
+RECORD_EXPORT_FILENAME: Final = "trino-records.csv"
 EXPORT_MEDIA_TYPE: Final = "text/csv; charset=utf-8"
 # Methods whose bodies are read into memory and therefore bounded by MAX_METADATA_BODY_BYTES.
 BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT"})
@@ -106,6 +118,14 @@ def recordings() -> RecordingRepository:
 
 def clips() -> RecordingStorage:
     return RecordingStorage()
+
+
+def walks() -> WalkRepository:
+    return WalkRepository()
+
+
+def exports() -> ExportRepository:
+    return ExportRepository()
 
 
 @app.exception_handler(SettingsError)
@@ -275,12 +295,63 @@ def site_stats(site_id: UUID, query: Annotated[StatsQuery, Query()], owner: UUID
     return repo.stats(owner, site_id, query.period, since, previous, current, query.tz)
 
 
+@router.put("/walks/{walk_id}", response_model=Walk)
+def save_walk(walk_id: UUID, payload: WalkInput, owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> Walk:
+    # Only sent when the person chose to save walks in their account; the phone keeps it until this answers.
+    return repo.save(owner, walk_id, payload, get_settings().walk_quota)
+
+
+@router.patch("/walks/{walk_id}", response_model=Walk)
+def rename_walk(walk_id: UUID, payload: WalkRename, owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> Walk:
+    renamed = repo.rename(owner, walk_id, payload.name)
+    if renamed is None:
+        raise_error(ErrorCode.WALK_NOT_FOUND)
+    return renamed
+
+
+@router.get("/walks", response_model=WalkPage)
+def list_walks(query: Annotated[WalkPageQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPage:
+    return repo.page(owner, query.before, query.limit)
+
+
+@router.get("/walks/{walk_id}", response_model=WalkDetail)
+def walk_detail(walk_id: UUID, owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkDetail:
+    detail = repo.detail(owner, walk_id)
+    if detail is None:
+        raise_error(ErrorCode.WALK_NOT_FOUND)
+    return detail
+
+
+@router.delete("/walks/{walk_id}", status_code=HTTPStatus.NO_CONTENT)
+def delete_walk(walk_id: UUID, owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> None:
+    # Deleting a walk that is already gone succeeds, so the phone can repeat it after a lost answer.
+    # Its songs are detections of their own and stay.
+    repo.delete(owner, walk_id)
+
+
+@router.get("/me/walks", response_model=WalkUsage)
+def walk_usage(owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkUsage:
+    return WalkUsage(walks=repo.usage(owner), limit=get_settings().walk_quota)
+
+
+@router.delete("/me/walks", response_model=WalksDeleted)
+def delete_walks(owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalksDeleted:
+    return WalksDeleted(deleted=repo.delete_all(owner))
+
+
 @router.get("/export")
-def export(query: Annotated[ExportQuery, Query()], owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Response:
+def export(query: Annotated[ExportQuery, Query()], owner: UUID = Depends(authenticate), repo: ExportRepository = Depends(exports)) -> Response:
+    if query.site_id and query.walk_id:
+        raise_error(ErrorCode.EXPORT_SCOPE_INVALID)
     if query.since and query.until and query.since >= query.until:
         raise_error(ErrorCode.INVALID_PERIOD)
-    body, truncated = repo.export_csv(owner, query.site_id, query.since, query.until)
-    filename = EXPORT_FILENAME_TEMPLATE.format(site_id=query.site_id)
+    body, truncated = repo.export_csv(owner, query.site_id, query.walk_id, query.since, query.until)
+    if query.site_id:
+        filename = EXPORT_FILENAME_TEMPLATE.format(site_id=query.site_id)
+    elif query.walk_id:
+        filename = WALK_EXPORT_FILENAME_TEMPLATE.format(walk_id=query.walk_id)
+    else:
+        filename = RECORD_EXPORT_FILENAME
     headers = {"Content-Disposition": f'attachment; filename="{filename}"', TRUNCATED_HEADER: str(truncated).lower()}
     return Response(content=body, media_type=EXPORT_MEDIA_TYPE, headers=headers)
 

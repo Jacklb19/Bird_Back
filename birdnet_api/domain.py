@@ -3,8 +3,9 @@
 The web client mirrors these values in `src/config/contract.ts`; changing one side without the other makes
 the server reject records the client considers valid, so keep both in step.
 """
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
+from math import asin, cos, radians, sin, sqrt
 from types import MappingProxyType
 from typing import Final, Literal
 from uuid import UUID
@@ -217,3 +218,32 @@ class ExportColumn(StrEnum):
 
 # Coordinates are exported with LOCATION_GRID_DECIMALS, the precision they are stored with.
 CONFIDENCE_EXPORT_DECIMALS: Final = 3
+
+
+# Walks saved in the account (ADR-35). Name and path bounds match the CHECKs of migration 20261015000000; the path
+# bound mirrors WALK_TRACK_MAX_POINTS in the client, which stops a path from growing beyond it.
+MAX_WALK_NAME_LENGTH: Final = 80
+MAX_WALK_POINTS: Final = 2000
+# Walks per page of the list, and the bounds of one walk's detail.
+DEFAULT_WALK_PAGE: Final = 20
+MAX_WALK_PAGE: Final = 50
+MAX_WALK_SPECIES: Final = 500
+MAX_WALK_PLACES: Final = 2000
+# Seconds a point's time may run past the end of its walk: the phone stamps both from the same clock, but rounds.
+WALK_TIME_TOLERANCE_SECONDS: Final = 1
+# Mean Earth radius (IUGG) in metres; the client's walkGeometry.ts measures paths with the same value and formula,
+# so a walk shows the same distance on the phone and in the account.
+EARTH_RADIUS_M: Final = 6_371_008.8
+
+
+def distance_meters(start: tuple[float, float], end: tuple[float, float]) -> float:
+    """Great-circle distance between two cells given as (latitude, longitude), in metres (haversine)."""
+    latitude_delta = radians(end[0] - start[0])
+    longitude_delta = radians(end[1] - start[1])
+    a = sin(latitude_delta / 2) ** 2 + cos(radians(start[0])) * cos(radians(end[0])) * sin(longitude_delta / 2) ** 2
+    return 2 * EARTH_RADIUS_M * asin(min(1.0, sqrt(a)))
+
+
+def track_meters(track: Sequence[tuple[float, float]]) -> float:
+    """Length of a path, in metres."""
+    return sum(distance_meters(track[index - 1], track[index]) for index in range(1, len(track)))

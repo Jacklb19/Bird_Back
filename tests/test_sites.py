@@ -1,11 +1,11 @@
 """HTTP contracts for sites, statistics and CSV export without a database."""
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import HTTPException
 
-from birdnet_api.app import app, now, sites
+from birdnet_api.app import app, exports, now, sites
 from birdnet_api.contracts import Site, SiteStats
 from tests.test_api import api  # noqa: F401  (fixture)
 
@@ -16,6 +16,7 @@ class MemorySites:
     def __init__(self):
         self.owned = {}
         self.calls = []
+        self.exports = []
 
     def list_sites(self, owner):
         return [s for o, s in self.owned.values() if o == owner]
@@ -34,8 +35,10 @@ class MemorySites:
         self.calls.append((period, since, previous, until, tz))
         return SiteStats(period=period, since=since, until=until, species_count=0, previous_species_count=None, detections=0, active_days=0, hourly=[0] * 24, species=[], missing=[])
 
-    def export_csv(self, owner, site_id, since, until):
-        self._check(owner, site_id)
+    def export_csv(self, owner, site_id, walk_id, since, until):
+        if site_id:
+            self._check(owner, site_id)
+        self.exports.append((site_id, walk_id))
         return "id,species\n", False
 
 
@@ -44,6 +47,7 @@ def site_api(api):  # noqa: F811
     client, _, headers, owner = api
     repo = MemorySites()
     app.dependency_overrides[sites] = lambda: repo
+    app.dependency_overrides[exports] = lambda: repo
     app.dependency_overrides[now] = lambda: NOW
     yield client, repo, headers, owner
 
@@ -81,3 +85,15 @@ def test_export_is_csv_for_own_sites_only(site_api):
     assert "attachment" in response.headers["content-disposition"]
     assert client.get("/v1/export", params={"site_id": site["id"], "since": "2026-10-07T00:00:00Z", "until": "2026-10-01T00:00:00Z"}, headers=headers()).status_code == 422
     assert client.get("/v1/export", params={"site_id": site["id"]}, headers=headers(user=uuid4())).status_code == 404
+
+
+def test_export_scope_is_a_site_a_walk_or_everything(site_api):
+    client, repo, headers, _ = site_api
+    site = client.post("/v1/sites", json={"name": "Barrio", "location": {"latitude": 4.6, "longitude": -74.0}}, headers=headers()).json()
+    walk = str(uuid4())
+    assert client.get("/v1/export", params={"site_id": site["id"], "walk_id": walk}, headers=headers()).status_code == 422
+    everything = client.get("/v1/export", headers=headers())
+    assert everything.status_code == 200 and 'filename="trino-records.csv"' in everything.headers["content-disposition"]
+    one_walk = client.get("/v1/export", params={"walk_id": walk}, headers=headers())
+    assert one_walk.status_code == 200 and f"trino-walk-{walk}.csv" in one_walk.headers["content-disposition"]
+    assert repo.exports[-2:] == [(None, None), (None, UUID(walk))]
