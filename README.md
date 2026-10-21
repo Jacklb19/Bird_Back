@@ -18,6 +18,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
 | `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
 | `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
+| `DELETE /v1/me` | Borra la cuenta entera (`{"confirmation": "DELETE"}`): primero los objetos de Storage (foto y grabaciones), luego el usuario de Auth, cuyo borrado arrastra perfil, detecciones, sitios, caminatas, informes y uso del modelo. 204; 502 si falla un paso (repetirlo es seguro) | Sí |
 | `POST /v1/me/avatar-url` | URL firmada para subir la foto (WebP, máx. 200 000 bytes) al bucket privado | Sí |
 | `POST /v1/me/sharing` | Comparte o deja de compartir todas las detecciones propias ya subidas (`{"shared": bool}` → `{"updated": n}`, las que cambiaron) | Sí |
 | `GET /v1/me/summary?tz=` | Totales propios sin descartadas: detecciones, especies, sitios, primera y última, días activos | Sí |
@@ -25,6 +26,10 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
 | `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio | Sí |
+| `GET /v1/sites/{id}/report?period=&tz=&locale=` | Último informe redactado del sitio para ese periodo e idioma, con las cifras de las que salió; `stale` si cambiaron. 404 si no hay | Sí |
+| `POST /v1/sites/{id}/report` | Redacta el informe solo cuando la persona lo pide (`{"period", "tz", "locale", "names"}`; `names`: nombres comunes de las especies). Con las mismas cifras devuelve el guardado sin llamar al modelo. 422 si no hay cantos en el periodo, 429 si se acabó el tope del día, 503 si el modelo no respondió o su texto escribió una cifra que no está en las estadísticas | Sí |
+| `GET /v1/species/{nombre científico}/card?locale=` | Ficha divulgativa ya escrita de la especie; `stale` si toca escribirla de nuevo. 404 si no hay | No |
+| `POST /v1/species/{nombre científico}/card?locale=` | Devuelve la ficha guardada o la escribe con el modelo a partir de GBIF y Wikipedia. 422 si el nombre no es una especie de ave que GBIF conozca, 429 si se acabó el tope, 502/503 si una fuente o el modelo no respondieron | Sí |
 | `PUT /v1/walks/{id}` | Guarda una caminata terminada (`name` opcional, `started_at`, `ended_at`, `track` con celdas `[lat, lon]` o `[lat, lon, segundos]`, hasta 2000). Idempotente con el UUID del teléfono; responde el resumen. 409 si el identificador es de otra cuenta, 507 si la cuenta llenó su tope | Sí |
 | `PATCH /v1/walks/{id}` | Cambia el nombre (`{"name"}`; `null` vuelve al que la app arma con la fecha) | Sí |
 | `GET /v1/walks?before=&limit=` | Caminatas propias, de la más reciente a la más antigua, con distancia, puntos y especies; `has_more` indica si hay otra página | Sí |
@@ -45,6 +50,14 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla.
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
+### Fichas e informes del modelo de lenguaje (ADR-37)
+
+- El modelo (Gemini, plan gratuito) nunca recibe audio ni identifica especies: redacta datos que la API ya reunió. Para una ficha, solo datos públicos (clasificación y categoría UICN de GBIF, resumen de Wikipedia) que la API pide ella misma; el cliente solo nombra la especie. Para un informe, las estadísticas deterministas del sitio, con diferencias y hora de más cantos ya calculadas; nunca el nombre del sitio, coordenadas ni datos de la persona.
+- Las fichas son compartidas: una por especie e idioma (`species_cards`), escrita la primera vez que alguien la pide y otra vez solo cuando caduca (`SPECIES_CARD_MAX_AGE_DAYS`) o cambian el modelo o sus instrucciones. Los informes son privados (`site_reports`): el último de cada sitio, periodo e idioma; se borran con el sitio o la cuenta.
+- Un informe se rechaza si escribe un número que no está en sus cifras (se reintenta una vez). Las instrucciones prohíben presentar una especie no detectada como ausente.
+- Topes por día (el de Google, que se reinicia a medianoche del Pacífico): `LLM_USER_DAILY_QUOTA` textos nuevos por persona y `LLM_DAILY_QUOTA` en total (`llm_usage`). Leer un texto ya escrito no cuenta, y un texto que el modelo no escribió se devuelve al tope.
+- Solo la API escribe esas tablas, con su propia conexión: sus políticas RLS dejan leer, nunca escribir.
+
 ### Caminatas
 
 - Solo se suben si la persona eligió guardarlas en su cuenta (ADR-35). Son privadas: RLS solo del dueño y ninguna consulta del mapa las lee.
@@ -54,6 +67,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ## Estructura
 
 - `birdnet_api/`: aplicación (rutas, autenticación JWT, contratos, repositorios y Storage).
+  - `accounts.py`: borrado de la cuenta (Storage y Auth); `language_model.py`: cliente de Gemini; `public_sources.py`: GBIF y Wikipedia para las fichas; `species_cards.py` y `site_reports.py`: fichas e informes; `llm_usage.py`: topes diarios.
   - `profiles.py`: perfil propio; `records.py`: registro personal (resumen y especies); `recordings.py`: grabaciones guardadas y su tope; `sites.py`: sitios y estadísticas; `walks.py`: caminatas guardadas; `exports.py`: CSV.
   - `storage.py`: URLs firmadas de subida y descarga con la clave de servicio y verificación del contenido subido (foto WebP, grabación WebM) y borrado de grabaciones.
   - `settings.py`: configuración leída del entorno una sola vez y validada.
@@ -108,7 +122,12 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `MODEL_MANIFEST_TIMEOUT_SECONDS` | Espera al descargar el manifiesto remoto | `10` |
 | `MAX_MANIFEST_BYTES` | Tamaño máximo del manifiesto remoto | `131072` |
 | `MODEL_RESOURCE_BASE_URL` | Base de `model_file` y `labels_file` relativos | `/models/` |
-| `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST`, `PATCH` o `PUT` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
+| `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST`, `PATCH`, `PUT` o `DELETE` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
 | `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
 | `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
+| `GEMINI_API_KEY` | Clave de Google AI Studio (plan gratuito, sin facturación) | — (503 al escribir una ficha o un informe) |
+| `GEMINI_MODEL`, `GEMINI_API_URL` | Modelo y dirección de la API de Gemini | `gemini-3.5-flash-lite`, `https://generativelanguage.googleapis.com/v1beta` |
+| `LLM_USER_DAILY_QUOTA`, `LLM_DAILY_QUOTA` | Textos nuevos por persona y en total por día; el total, por debajo del límite diario que muestra AI Studio | `10`, `200` |
+| `LLM_TIMEOUT_SECONDS`, `PUBLIC_DATA_TIMEOUT_SECONDS` | Espera del modelo y de GBIF/Wikipedia | `20`, `6` |
+| `SPECIES_CARD_MAX_AGE_DAYS` | Días tras los que una ficha se vuelve a escribir | `180` |
 | `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas y del registro personal si el cliente no envía `tz` | `America/Bogota` |
