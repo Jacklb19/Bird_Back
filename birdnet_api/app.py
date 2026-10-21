@@ -1,4 +1,4 @@
-"""Synchronization, map, review, saved recordings, walks, profile, personal record, monitoring sites, statistics, CSV export and the model manifest."""
+"""Synchronization, map, review, saved recordings, walks, profile and its deletion, personal record, monitoring sites, statistics, texts of the language model, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -10,8 +10,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
+from .accounts import AccountDeletion
 from .auth import authenticate
 from .contracts import (
+    AccountDeletion as AccountDeletionInput,
     AvatarInput,
     AvatarUpload,
     BatchInput,
@@ -29,6 +31,8 @@ from .contracts import (
     RecordingUrl,
     RecordingUsage,
     RecordSummary,
+    ReportInput,
+    ReportQuery,
     ReviewedDetection,
     ReviewInput,
     SharingInput,
@@ -36,9 +40,12 @@ from .contracts import (
     Site,
     SiteInput,
     SiteList,
+    SiteReport,
     SiteStats,
+    SpeciesCard,
     SpeciesRecord,
     StatsQuery,
+    TextQuery,
     TimeZoneQuery,
     Walk,
     WalkDetail,
@@ -49,16 +56,22 @@ from .contracts import (
     WalksDeleted,
     WalkUsage,
 )
-from .domain import MAX_SPECIES_LENGTH, local_status
+from .domain import MAX_SPECIES_LENGTH, SCIENTIFIC_NAME_PATTERN, StatsPeriod, local_status
 from .errors import ErrorCode, error_response, raise_error
 from .exports import ExportRepository
+from .language_model import GeminiWriter, TextWriter
+from .llm_usage import UsageRepository
 from .manifest import load_manifest
 from .profiles import ProfileRepository
 from .recordings import RecordingRepository
 from .records import RecordRepository
 from .repository import DetectionRepository
 from .settings import SettingsError, get_settings
+from .site_reports import SiteReportRepository, is_current, to_report
+from .site_reports import report as write_report
 from .sites import SiteRepository
+from .species_cards import SpeciesCardRepository, to_card
+from .species_cards import card as write_card
 from .storage import AvatarStorage, RecordingStorage
 from .walks import WalkRepository
 
@@ -71,7 +84,7 @@ WALK_EXPORT_FILENAME_TEMPLATE: Final = "trino-walk-{walk_id}.csv"
 RECORD_EXPORT_FILENAME: Final = "trino-records.csv"
 EXPORT_MEDIA_TYPE: Final = "text/csv; charset=utf-8"
 # Methods whose bodies are read into memory and therefore bounded by MAX_METADATA_BODY_BYTES.
-BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT"})
+BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +139,26 @@ def walks() -> WalkRepository:
 
 def exports() -> ExportRepository:
     return ExportRepository()
+
+
+def accounts() -> AccountDeletion:
+    return AccountDeletion()
+
+
+def writer() -> TextWriter:
+    return GeminiWriter()
+
+
+def usage() -> UsageRepository:
+    return UsageRepository()
+
+
+def species_cards() -> SpeciesCardRepository:
+    return SpeciesCardRepository()
+
+
+def site_reports() -> SiteReportRepository:
+    return SiteReportRepository()
 
 
 @app.exception_handler(SettingsError)
@@ -234,6 +267,13 @@ def update_profile(payload: ProfileInput, owner: UUID = Depends(authenticate), r
     return Profile(alias=stored.alias, avatar_url=photos.url(stored.avatar_path), created_at=stored.created_at)
 
 
+@router.delete("/me", status_code=HTTPStatus.NO_CONTENT)
+def delete_account(_: AccountDeletionInput, owner: UUID = Depends(authenticate), deletion: AccountDeletion = Depends(accounts)) -> None:
+    # Everything in the account goes: Storage objects first, then the user, whose removal cascades in the database.
+    # The phone deletes what it keeps of the account only after this answers.
+    deletion.delete(owner)
+
+
 @router.post("/me/avatar-url", response_model=AvatarUpload)
 def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
     # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
@@ -289,10 +329,53 @@ def create_site(payload: SiteInput, owner: UUID = Depends(authenticate), repo: S
 
 @router.get("/sites/{site_id}/stats", response_model=SiteStats)
 def site_stats(site_id: UUID, query: Annotated[StatsQuery, Query()], owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites), current: datetime = Depends(now)) -> SiteStats:
-    days = query.period.days
+    return _period_stats(owner, site_id, query.period, query.tz, repo, current)
+
+
+def _period_stats(owner: UUID, site_id: UUID, period: StatsPeriod, tz: str, repo: SiteRepository, current: datetime) -> SiteStats:
+    days = period.days
     since = current - timedelta(days=days) if days is not None else None
     previous = since - timedelta(days=days) if since is not None and days is not None else None
-    return repo.stats(owner, site_id, query.period, since, previous, current, query.tz)
+    return repo.stats(owner, site_id, period, since, previous, current, tz)
+
+
+@router.get("/sites/{site_id}/report", response_model=SiteReport)
+def site_report(site_id: UUID, query: Annotated[ReportQuery, Query()], owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites),
+                reports: SiteReportRepository = Depends(site_reports), model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SiteReport:
+    stats = _period_stats(owner, site_id, query.period, query.tz, repo, current)
+    stored = reports.get(owner, site_id, query.period, query.locale)
+    if stored is None:
+        raise_error(ErrorCode.REPORT_NOT_FOUND)
+    return to_report(stored, stale=not is_current(stored, stats, query.tz, model.model))
+
+
+@router.post("/sites/{site_id}/report", response_model=SiteReport)
+def new_site_report(site_id: UUID, payload: ReportInput, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites),
+                    reports: SiteReportRepository = Depends(site_reports), counter: UsageRepository = Depends(usage),
+                    model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SiteReport:
+    # Written only because the person asked; asking again with the same figures returns the stored report.
+    stats = _period_stats(owner, site_id, payload.period, payload.tz, repo, current)
+    return write_report(owner, site_id, stats, payload.tz, payload.locale, payload.names, current, reports, counter, model)
+
+
+ScientificName = Annotated[str, Path(min_length=1, max_length=MAX_SPECIES_LENGTH, pattern=f"^{SCIENTIFIC_NAME_PATTERN}$")]
+
+
+@router.get("/species/{species}/card", response_model=SpeciesCard)
+def species_card(species: ScientificName, query: Annotated[TextQuery, Query()], cards: SpeciesCardRepository = Depends(species_cards),
+                 model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SpeciesCard:
+    # Public: a card holds only public facts. Writing one needs an account, reading it does not.
+    stored = cards.get(species, query.locale)
+    if stored is None:
+        raise_error(ErrorCode.CARD_NOT_FOUND)
+    return to_card(stored, current, model.model)
+
+
+@router.post("/species/{species}/card", response_model=SpeciesCard)
+def new_species_card(species: ScientificName, query: Annotated[TextQuery, Query()], owner: UUID = Depends(authenticate),
+                     cards: SpeciesCardRepository = Depends(species_cards), counter: UsageRepository = Depends(usage),
+                     model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SpeciesCard:
+    return write_card(owner, species, query.locale, current, cards, counter, model)
 
 
 @router.put("/walks/{walk_id}", response_model=Walk)

@@ -1,13 +1,14 @@
 """Validate every client-controlled value before it reaches PostgreSQL."""
 from datetime import datetime
 from math import isclose
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from .domain import (
     AVATAR_CONTENT_TYPE,
+    COMMON_NAME_PATTERN,
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
     DEFAULT_WALK_PAGE,
@@ -16,12 +17,14 @@ from .domain import (
     LOCATION_GRID_TOLERANCE,
     MAX_ALIAS_LENGTH,
     MAX_AVATAR_BYTES,
+    MAX_COMMON_NAME_LENGTH,
     MAX_CONFIDENCE,
     MAX_LATITUDE,
     MAX_LONGITUDE,
     MAX_MODEL_VERSION_LENGTH,
     MAX_RECORDING_BYTES,
     MAX_RECORDING_PATH_LENGTH,
+    MAX_REPORT_NAMES,
     MAX_SITE_NAME_LENGTH,
     MAX_SPECIES_LENGTH,
     MAX_SYNC_BATCH_SIZE,
@@ -31,6 +34,7 @@ from .domain import (
     MAX_WALK_POINTS,
     RECORDING_CONTENT_TYPE,
     WALK_TIME_TOLERANCE_SECONDS,
+    CardLanguage,
     DetectionStatus,
     MapDetectionStatus,
     ReviewAction,
@@ -368,9 +372,6 @@ class SpeciesDetection(StrictModel):
     confidence: float
     status: MapDetectionStatus
     site_id: UUID | None
-    # No detection carries a fragment any more. The field stays, always false, while versions of the app
-    # installed before the fragments were retired are in use: they drop any record that lacks it.
-    has_audio: bool = False
     has_recording: bool
     reviewed_by: Reviewer | None
 
@@ -480,3 +481,64 @@ class WalkUsage(StrictModel):
 
 class WalksDeleted(StrictModel):
     deleted: int
+
+
+class TextQuery(StrictModel):
+    locale: CardLanguage = CardLanguage.ES
+
+
+class CardSource(StrictModel):
+    name: str
+    url: str
+    license: str
+
+
+class SpeciesCard(StrictModel):
+    """A plain-language card written by the language model from public sources only (RF-14).
+
+    It is never the person's data and never says whether the bird lives anywhere in particular. `stale` asks for a
+    new one: its sources may have changed, or the model or its instructions did.
+    """
+    species: str
+    locale: CardLanguage
+    paragraphs: list[str]
+    sources: list[CardSource]
+    model: str
+    generated_at: datetime
+    stale: bool
+
+
+CommonName = Annotated[str, BeforeValidator(_collapse_spaces), Field(min_length=1, max_length=MAX_COMMON_NAME_LENGTH, pattern=f"^{COMMON_NAME_PATTERN}$")]
+
+
+class ReportQuery(StrictModel):
+    period: StatsPeriod = DEFAULT_STATS_PERIOD
+    tz: TimeZoneName = Field(default_factory=_default_time_zone)
+    locale: CardLanguage = CardLanguage.ES
+
+
+class ReportInput(ReportQuery):
+    """What the person asked for, plus the common names their app shows for the species of the site.
+
+    The API has no names index; the names only replace scientific ones in the text and are checked to be names.
+    """
+    names: dict[Annotated[str, Field(min_length=1, max_length=MAX_SPECIES_LENGTH)], CommonName] = Field(default_factory=dict, max_length=MAX_REPORT_NAMES)
+
+
+class SiteReport(StrictModel):
+    """Plain-language report of a site, written only when asked, from the deterministic statistics it carries (RF-15).
+
+    Every number in the paragraphs is one of `stats`. `stale` says the figures changed since it was written.
+    """
+    period: StatsPeriod
+    locale: CardLanguage
+    paragraphs: list[str]
+    stats: SiteStats
+    model: str
+    generated_at: datetime
+    stale: bool
+
+
+class AccountDeletion(StrictModel):
+    """Deleting an account cannot be undone; the fixed word guards against a request sent by mistake."""
+    confirmation: Literal["DELETE"]

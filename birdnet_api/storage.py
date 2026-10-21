@@ -28,6 +28,9 @@ SIGNED_DOWNLOAD_PATH: Final = "/object/sign/"
 SIGNED_DOWNLOAD_URL_FIELD: Final = "signedURL"
 SIGNED_DOWNLOAD_EXPIRY_FIELD: Final = "expiresIn"
 OBJECT_PATH: Final = "/object/"
+# Lists a folder of a bucket, one page at a time; entries are named relative to the folder.
+LIST_PATH: Final = "/object/list/"
+LIST_PAGE_SIZE: Final = 1000
 # Body field of a bulk removal: the object keys to delete from the bucket.
 REMOVE_KEYS_FIELD: Final = "prefixes"
 API_KEY_HEADER: Final = "apikey"
@@ -89,6 +92,23 @@ class BucketStorage:
             return
         with self.client() as client:
             client.request("DELETE", f"{OBJECT_PATH}{self.bucket}", json={REMOVE_KEYS_FIELD: paths}).raise_for_status()
+
+    def folder(self, folder: str) -> list[str]:
+        """Paths of every object directly inside `folder`. Raises httpx.HTTPError, KeyError or ValueError when Storage fails."""
+        paths: list[str] = []
+        offset = 0
+        with self.client() as client:
+            while True:
+                response = client.post(f"{LIST_PATH}{self.bucket}", json={"prefix": folder, "limit": LIST_PAGE_SIZE, "offset": offset})
+                response.raise_for_status()
+                page = response.json()
+                if not isinstance(page, list):
+                    raise ValueError("Invalid storage listing")
+                # Entries without an id are subfolders; the app never creates any inside a person's folder.
+                paths.extend(f"{folder}/{entry['name']}" for entry in page if entry.get("id"))
+                offset += len(page)
+                if len(page) < LIST_PAGE_SIZE:
+                    return paths
 
     def _absolute(self, url: object, prefix: str) -> str:
         # Only Storage-relative URLs are accepted, so a tampered response cannot send the client elsewhere.

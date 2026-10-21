@@ -57,8 +57,9 @@ def test_rls_and_location_precision_are_enforced(database):
     with repo.transaction(other) as connection:
         assert connection.execute("UPDATE public.detections SET especie='forged' WHERE id=%s", (row.id,)).rowcount == 0
     with psycopg.connect(TEST_DATABASE_URL) as connection:
-        tables = connection.execute("SELECT relname,relrowsecurity FROM pg_class JOIN pg_namespace ON pg_class.relnamespace=pg_namespace.oid WHERE nspname='public' AND relname IN ('profiles','sites','detections','verification_jobs','model_versions')").fetchall()
-        assert len(tables) == 5 and all(enabled for _, enabled in tables)
+        expected = ("profiles", "sites", "detections", "model_versions", "walks", "species_cards", "site_reports", "llm_usage")
+        tables = connection.execute("SELECT relname,relrowsecurity FROM pg_class JOIN pg_namespace ON pg_class.relnamespace=pg_namespace.oid WHERE nspname='public' AND relname = ANY(%s)", (list(expected),)).fetchall()
+        assert len(tables) == len(expected) and all(enabled for _, enabled in tables)
         location = connection.execute("SELECT ST_Y(ubicacion::geometry),ST_X(ubicacion::geometry) FROM public.detections WHERE id=%s", (row.id,)).fetchone()
         assert location == (4.679, -74.123)
 
@@ -405,3 +406,102 @@ def test_walk_rows_reject_paths_beyond_their_bounds(database):
     with pytest.raises(HTTPException), repo.transaction(owner) as connection:
         connection.execute("INSERT INTO public.walks (id,user_id,nombre,inicio,fin) VALUES (%s,%s,'Bien',now(),now() - interval '1 second')",
                            (uuid4(), owner))
+
+
+def test_cloud_verification_leftovers_are_gone(database):
+    # Migration 20261021000100: nothing has used them since ADR-32.
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        assert connection.execute("SELECT to_regclass('public.verification_jobs')").fetchone()[0] is None
+        assert connection.execute("SELECT 1 FROM information_schema.columns WHERE table_name='detections' AND column_name='ruta_audio'").fetchone() is None
+
+
+def test_language_model_tables_are_written_only_by_the_api(database):
+    from birdnet_api.contracts import SiteInput
+    from birdnet_api.sites import SiteRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    with repo.trusted_transaction() as connection:
+        connection.execute("INSERT INTO public.species_cards (especie,idioma,parrafos,fuentes,modelo,version_instrucciones) VALUES ('Turdus fuscater','es','[\"Texto.\"]','[]','m',1) ON CONFLICT DO NOTHING")
+        connection.execute("""INSERT INTO public.site_reports (site_id,user_id,periodo,idioma,zona_horaria,cifras,huella,parrafos,modelo,version_instrucciones)
+            VALUES (%s,%s,'month','es','UTC','{}','h','["Texto."]','m',1)""", (site.id, owner))
+        connection.execute("INSERT INTO public.llm_usage (user_id,dia,textos) VALUES (%s,'2026-10-21',3)", (owner,))
+    # Anyone reads cards; a report and a usage count only their owner.
+    with repo.transaction(other) as connection:
+        assert connection.execute("SELECT count(*) AS n FROM public.species_cards WHERE especie='Turdus fuscater'").fetchone()["n"] == 1
+        assert connection.execute("SELECT count(*) AS n FROM public.site_reports").fetchone()["n"] == 0
+        assert connection.execute("SELECT count(*) AS n FROM public.llm_usage").fetchone()["n"] == 0
+    with repo.transaction(owner) as connection:
+        assert connection.execute("SELECT count(*) AS n FROM public.site_reports").fetchone()["n"] == 1
+        assert connection.execute("SELECT textos FROM public.llm_usage").fetchone()["textos"] == 3
+        # No client may write a card, a report or its own count, not even its owner.
+        assert connection.execute("UPDATE public.species_cards SET parrafos='[\"forged\"]'").rowcount == 0
+        assert connection.execute("UPDATE public.site_reports SET parrafos='[\"forged\"]'").rowcount == 0
+        assert connection.execute("UPDATE public.llm_usage SET textos=0").rowcount == 0
+        assert connection.execute("DELETE FROM public.llm_usage").rowcount == 0
+    for statement, params in (
+        ("INSERT INTO public.species_cards (especie,idioma,parrafos,fuentes,modelo,version_instrucciones) VALUES ('Zonotrichia capensis','es','[\"x\"]','[]','m',1)", ()),
+        ("INSERT INTO public.llm_usage (user_id,dia,textos) VALUES (%s,'2026-10-22',0)", (owner,)),
+        ("INSERT INTO public.site_reports (site_id,user_id,periodo,idioma,zona_horaria,cifras,huella,parrafos,modelo,version_instrucciones) VALUES (%s,%s,'week','es','UTC','{}','h','[\"x\"]','m',1)", (site.id, owner)),
+    ):
+        with pytest.raises(HTTPException), repo.transaction(owner) as connection:
+            connection.execute(statement, params)
+    # The owner may delete their report; deleting the site takes it too.
+    with repo.transaction(owner) as connection:
+        connection.execute("DELETE FROM public.sites WHERE id=%s", (site.id,))
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        assert connection.execute("SELECT count(*) FROM public.site_reports WHERE site_id=%s", (site.id,)).fetchone()[0] == 0
+
+
+def test_daily_text_caps_hold_under_concurrency(database):
+    from datetime import UTC, datetime
+
+    from birdnet_api.llm_usage import UsageRepository
+
+    _, owner, other = database
+    usage = UsageRepository()
+    # A day of its own, emptied first: the total of a day counts every person, also those of earlier runs.
+    current = datetime(2030, 1, 1, 20, tzinfo=UTC)
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM public.llm_usage WHERE dia IN ('2030-01-01', '2030-01-02')")
+
+    def attempt(user):
+        try:
+            usage.spend(user, current, per_person=3, total=5)
+            return True
+        except HTTPException as error:
+            assert error.status_code == 429
+            return False
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        mine = list(pool.map(lambda _: attempt(owner), range(10)))
+    assert sum(mine) == 3
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        theirs = list(pool.map(lambda _: attempt(other), range(10)))
+    # The total of the day stops the second person at 2, below their own cap of 3.
+    assert sum(theirs) == 2
+    usage.give_back(other, current)
+    assert attempt(other) and not attempt(other)
+    # 20:00 UTC on 1 January is still that day in Pacific time; 09:00 UTC on the 2nd is the 2nd there, a new day.
+    assert usage.spend(owner, datetime(2030, 1, 2, 9, tzinfo=UTC), per_person=3, total=5) is None
+
+
+def test_deleting_the_auth_user_removes_the_whole_account(database):
+    from birdnet_api.contracts import SiteInput, WalkInput
+    from birdnet_api.sites import SiteRepository
+    from birdnet_api.walks import WalkRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    repo.batch(owner, [DetectionInput.model_validate(detection(site_id=str(site.id)))])
+    repo.batch(other, [DetectionInput.model_validate(detection())])
+    WalkRepository().save(owner, uuid4(), WalkInput.model_validate({"started_at": "2026-10-06T11:00:00Z", "ended_at": "2026-10-06T12:00:00Z", "track": []}), quota=5)
+    with repo.trusted_transaction() as connection:
+        connection.execute("""INSERT INTO public.site_reports (site_id,user_id,periodo,idioma,zona_horaria,cifras,huella,parrafos,modelo,version_instrucciones)
+            VALUES (%s,%s,'month','es','UTC','{}','h','["Texto."]','m',1)""", (site.id, owner))
+        connection.execute("INSERT INTO public.llm_usage (user_id,dia,textos) VALUES (%s,'2026-10-21',1)", (owner,))
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM auth.users WHERE id=%s", (owner,))
+        for table, column in (("profiles", "id"), ("sites", "owner_id"), ("detections", "user_id"), ("walks", "user_id"), ("site_reports", "user_id"), ("llm_usage", "user_id")):
+            assert connection.execute(f"SELECT count(*) FROM public.{table} WHERE {column}=%s", (owner,)).fetchone()[0] == 0, table
+    assert stored_detections(other) == 1

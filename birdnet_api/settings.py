@@ -38,6 +38,18 @@ DEFAULT_RECORDING_QUOTA_BYTES: Final = 50 * 1024 * 1024
 # Walks one account may keep (ADR-35). A full path takes under 100 kB in the database, so a full account stays
 # under 20 MB of the free plan's 500 MB.
 DEFAULT_WALK_QUOTA: Final = 200
+# Language model that writes species cards and site reports (ADR-37). Gemini's free tier needs no billing; its
+# limits are per project and only shown in AI Studio, so the daily caps below must stay under what it shows there.
+DEFAULT_LLM_API_URL: Final = "https://generativelanguage.googleapis.com/v1beta"
+DEFAULT_LLM_MODEL: Final = "gemini-3.5-flash-lite"
+# Bounded so a card (public sources, then the model) fits the function's maxDuration of 60 s in vercel.json.
+DEFAULT_LLM_TIMEOUT_SECONDS: Final = 20.0
+DEFAULT_PUBLIC_DATA_TIMEOUT_SECONDS: Final = 6.0
+# New texts per person per day, and in total per day; reading a text already written does not count.
+DEFAULT_LLM_USER_DAILY_QUOTA: Final = 10
+DEFAULT_LLM_DAILY_QUOTA: Final = 200
+# A species card is written again after this many days, so it follows changes in its sources.
+DEFAULT_SPECIES_CARD_MAX_AGE_DAYS: Final = 180
 # Deployment region; used for statistics when the client sends no time zone.
 DEFAULT_TIME_ZONE: Final = "America/Bogota"
 # Vercel rejects function request bodies above 4.5 MB, so a larger metadata limit could never apply.
@@ -68,6 +80,15 @@ class Settings:
     recording_quota_bytes: int
     walk_quota: int
     storage_timeout_seconds: float
+    # Language model (ADR-37); without a key the routes that write texts answer "not configured".
+    llm_api_url: str
+    llm_api_key: str | None
+    llm_model: str
+    llm_timeout_seconds: float
+    llm_user_daily_quota: int
+    llm_daily_quota: int
+    species_card_max_age_days: int
+    public_data_timeout_seconds: float
     # Model manifest: the remote URL wins over the local file when set.
     model_manifest_path: Path
     model_manifest_url: str | None
@@ -106,6 +127,14 @@ class Settings:
             recording_quota_bytes=_positive_int(environ, "RECORDING_QUOTA_BYTES", DEFAULT_RECORDING_QUOTA_BYTES),
             walk_quota=_positive_int(environ, "WALK_QUOTA", DEFAULT_WALK_QUOTA),
             storage_timeout_seconds=_positive_seconds(environ, "STORAGE_TIMEOUT_SECONDS", DEFAULT_STORAGE_TIMEOUT_SECONDS),
+            llm_api_url=(_text(environ, "GEMINI_API_URL") or DEFAULT_LLM_API_URL).rstrip("/"),
+            llm_api_key=_text(environ, "GEMINI_API_KEY"),
+            llm_model=_text(environ, "GEMINI_MODEL") or DEFAULT_LLM_MODEL,
+            llm_timeout_seconds=_positive_seconds(environ, "LLM_TIMEOUT_SECONDS", DEFAULT_LLM_TIMEOUT_SECONDS),
+            llm_user_daily_quota=_positive_int(environ, "LLM_USER_DAILY_QUOTA", DEFAULT_LLM_USER_DAILY_QUOTA),
+            llm_daily_quota=_positive_int(environ, "LLM_DAILY_QUOTA", DEFAULT_LLM_DAILY_QUOTA),
+            species_card_max_age_days=_positive_int(environ, "SPECIES_CARD_MAX_AGE_DAYS", DEFAULT_SPECIES_CARD_MAX_AGE_DAYS),
+            public_data_timeout_seconds=_positive_seconds(environ, "PUBLIC_DATA_TIMEOUT_SECONDS", DEFAULT_PUBLIC_DATA_TIMEOUT_SECONDS),
             model_manifest_path=Path(manifest_path) if manifest_path else BUNDLED_MODEL_MANIFEST,
             model_manifest_url=model_manifest_url,
             model_manifest_allowed_hosts=allowed_hosts,
