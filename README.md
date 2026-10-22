@@ -14,8 +14,9 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `PUT /v1/detections/{id}/recording` | Enlaza la grabación subida tras verificar su ruta y contenido (`{"recording_path"}`); responde el uso de la cuenta | Sí |
 | `GET /v1/detections/{id}/recording` | URL firmada temporal (10 min) para oír la grabación; solo su autor | Sí |
 | `DELETE /v1/detections/{id}/recording` | Borra la grabación de Storage y su enlace | Sí |
+| `PUT /v1/detections/{id}/note` | Nota e individuos de una detección propia (`{"note", "individuals"}`, hasta 500 caracteres y de 1 a 999; los dos `null` la borran). Idempotente; 404 si no es propia. Privada: nunca sale en el mapa | Sí |
 | `GET /v1/me/recordings`, `DELETE /v1/me/recordings` | Uso (`recordings`, `bytes`, `limit_bytes`) y borrado de todas las grabaciones propias | Sí |
-| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas | Sí |
+| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas; `generalized_m` marca una especie amenazada de otra persona, mostrada en el centro de una celda de ~11 km | Sí |
 | `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
 | `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
 | `DELETE /v1/me` | Borra la cuenta entera (`{"confirmation": "DELETE"}`): primero los objetos de Storage (foto y grabaciones), luego el usuario de Auth, cuyo borrado arrastra perfil, detecciones, sitios, caminatas, informes y uso del modelo. 204; 502 si falla un paso (repetirlo es seguro) | Sí |
@@ -30,6 +31,8 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `POST /v1/sites/{id}/report` | Redacta el informe solo cuando la persona lo pide (`{"period", "tz", "locale", "names"}`; `names`: nombres comunes de las especies). Con las mismas cifras devuelve el guardado sin llamar al modelo. 422 si no hay cantos en el periodo, 429 si se acabó el tope del día, 503 si el modelo no respondió o su texto escribió una cifra que no está en las estadísticas | Sí |
 | `GET /v1/species/{nombre científico}/card?locale=` | Ficha divulgativa ya escrita de la especie; `stale` si toca escribirla de nuevo. 404 si no hay | No |
 | `POST /v1/species/{nombre científico}/card?locale=` | Devuelve la ficha guardada o la escribe con el modelo a partir de GBIF y Wikipedia. 422 si el nombre no es una especie de ave que GBIF conozca, 429 si se acabó el tope, 502/503 si una fuente o el modelo no respondieron | Sí |
+| `GET /v1/species/{nombre científico}/sounds` | Hasta 3 cantos de referencia de xeno-canto (calidad A o B, menos de 60 s) con grabador, licencia, enlace y número de catálogo, sin lugar; `restricted` si xeno-canto los protege. La CDN de Vercel guarda la respuesta. 503 sin `XENO_CANTO_API_KEY`, 502 si xeno-canto falla | No |
+| `GET /v1/walks/paths?before=&limit=` | Recorridos y lugares de las caminatas propias, de 10 en 10 (máx. 20), para «Mi mapa» | Sí |
 | `PUT /v1/walks/{id}` | Guarda una caminata terminada (`name` opcional, `started_at`, `ended_at`, `track` con celdas `[lat, lon]` o `[lat, lon, segundos]`, hasta 2000). Idempotente con el UUID del teléfono; responde el resumen. 409 si el identificador es de otra cuenta, 507 si la cuenta llenó su tope | Sí |
 | `PATCH /v1/walks/{id}` | Cambia el nombre (`{"name"}`; `null` vuelve al que la app arma con la fecha) | Sí |
 | `GET /v1/walks?before=&limit=` | Caminatas propias, de la más reciente a la más antigua, con distancia, puntos y especies; `has_more` indica si hay otra página | Sí |
@@ -43,6 +46,11 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - Las coordenadas llegan ya redondeadas a una cuadrícula de 4 decimales (~10 m; `LOCATION_GRID_DECIMALS`); con más decimales la API responde 422 y la base de datos vuelve a redondear por si acaso. Los valores de 3 decimales (~100 m) de clientes y filas anteriores siguen siendo válidos.
 - Cada persona decide si sus cantos aparecen en el mapa de todos (`detections.compartida`, por defecto sí). Una detección no compartida solo la lee su autor: lo imponen la consulta del mapa y la política RLS `detections_select_shared_or_own`. Su registro personal, las estadísticas del sitio y la exportación no cambian.
 - Reintentar la sincronización no modifica una detección ya guardada; para cambiar lo ya subido se usa `POST /v1/me/sharing`.
+- Las especies amenazadas (VU, EN, CR y EW de la Lista Roja global) de otras personas se devuelven en el centro de su celda de 0,1°, y el área pedida se compara con ese centro (ADR-41). La lista está en `birdnet_api/threatened_species.json` y se regenera con `python scripts/build_threatened_species.py ../frontend/public/models/labels.txt ../frontend/public/models/birdnet_plus_labels.txt`.
+
+### Verificación en dos pasos
+
+- Una cuenta con un factor TOTP verificado necesita una sesión `aal2` (que dio el código) para cualquier ruta con sesión; si no, 403 (ADR-39). La API pasa el nivel a las claims de cada transacción y las políticas RLS restrictivas de la migración `20261022000000_second_factor.sql` lo exigen también en la base.
 
 ### Revisión y grabaciones
 
