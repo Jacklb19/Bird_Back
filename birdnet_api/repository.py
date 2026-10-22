@@ -9,11 +9,22 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
-from .auth import AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM
 from .contracts import BatchResponse, DetectionInput, MapDetection, MapQuery, MapResponse, ReviewedDetection
-from .domain import API_TO_DB_STATUS, DB_TO_API_REVIEWER, DB_TO_API_STATUS, WGS84_SRID, DbDetectionStatus, DbReviewer, ReviewAction
+from .domain import (
+    API_TO_DB_STATUS,
+    DB_TO_API_REVIEWER,
+    DB_TO_API_STATUS,
+    THREATENED_CELL_DEGREES,
+    THREATENED_CELL_METERS,
+    WGS84_SRID,
+    DbDetectionStatus,
+    DbReviewer,
+    ReviewAction,
+)
 from .errors import ErrorCode, raise_error
+from .session import ASSURANCE_CLAIM, AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM, session_assurance
 from .settings import get_settings
+from .threatened import threatened_species
 
 # Transaction-local setting that Supabase's auth.uid() reads, so RLS policies see the requesting user.
 JWT_CLAIMS_SETTING: Final = "request.jwt.claims"
@@ -24,7 +35,7 @@ class DetectionRepository:
     def transaction(self, owner: UUID) -> Iterator[psycopg.Connection[dict[str, Any]]]:
         with self._connect() as connection:
             connection.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(AUTHENTICATED_ROLE)))
-            claims = json.dumps({SUBJECT_CLAIM: str(owner), ROLE_CLAIM: AUTHENTICATED_ROLE})
+            claims = json.dumps({SUBJECT_CLAIM: str(owner), ROLE_CLAIM: AUTHENTICATED_ROLE, ASSURANCE_CLAIM: session_assurance.get()})
             connection.execute("SELECT set_config(%s, %s, true)", (JWT_CLAIMS_SETTING, claims))
             yield connection
 
@@ -49,6 +60,12 @@ class DetectionRepository:
                 yield connection
         except psycopg.Error:
             raise_error(ErrorCode.DATABASE_UNAVAILABLE)
+
+    def has_second_factor(self, person: UUID) -> bool:
+        # The factors live in Supabase's auth schema; migration 20261022000000_second_factor.sql reads them for us.
+        with self.trusted_transaction() as connection:
+            row = connection.execute("SELECT private.has_second_factor(%s) AS required", (person,)).fetchone()
+            return bool(row and row["required"])
 
     def get_owned(self, owner: UUID, detection: UUID) -> dict[str, Any] | None:
         with self.transaction(owner) as connection:
@@ -125,28 +142,41 @@ class DetectionRepository:
         # Discarded detections stay private to their author; the map only shows usable indications.
         # Unshared detections reach only their author: RLS already hides them, and the filter keeps them out even without it.
         # Site names are private too: RLS already hides foreign sites, and the CASE keeps them out even without it.
+        # Someone else's detection of a threatened species is placed at the centre of its coarse cell, and the visible
+        # area is matched against that point: matched against the real one, narrowing the area would find the cell.
         with self.transaction(viewer) as connection:
             rows = connection.execute(
-                """SELECT d.id, d.especie, d.confianza, d.estado, d.momento,
-                    ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude,
-                    d.user_id = %(viewer)s AS own, CASE WHEN d.user_id = %(viewer)s THEN s.nombre END AS site_name
-                FROM public.detections d LEFT JOIN public.sites s ON s.id = d.site_id
-                WHERE d.estado <> %(discarded)s
-                  AND (d.compartida OR d.user_id = %(viewer)s)
-                  AND ST_Intersects(d.ubicacion::geometry, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
-                  AND (%(species)s::text IS NULL OR d.especie = %(species)s)
-                  AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)
-                  AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
-                ORDER BY d.momento DESC LIMIT %(fetch)s""",
+                """SELECT id, especie, confianza, estado, momento, ST_Y(shown) AS latitude, ST_X(shown) AS longitude, own, site_name, generalized
+                FROM (
+                    SELECT d.id, d.especie, d.confianza, d.estado, d.momento, d.user_id = %(viewer)s AS own,
+                        CASE WHEN d.user_id = %(viewer)s THEN s.nombre END AS site_name,
+                        (d.user_id <> %(viewer)s AND d.especie = ANY(%(threatened)s)) AS generalized,
+                        CASE WHEN d.user_id <> %(viewer)s AND d.especie = ANY(%(threatened)s)
+                            THEN ST_SetSRID(ST_MakePoint(
+                                round(((floor(ST_X(d.ubicacion::geometry) / %(cell)s) + 0.5) * %(cell)s)::numeric, 4)::double precision,
+                                round(((floor(ST_Y(d.ubicacion::geometry) / %(cell)s) + 0.5) * %(cell)s)::numeric, 4)::double precision), %(srid)s::integer)
+                            ELSE d.ubicacion::geometry END AS shown
+                    FROM public.detections d LEFT JOIN public.sites s ON s.id = d.site_id
+                    WHERE d.estado <> %(discarded)s
+                      AND (d.compartida OR d.user_id = %(viewer)s)
+                      -- Wide enough to hold any detection whose coarse cell centre may fall inside the area.
+                      AND ST_Intersects(d.ubicacion::geometry, ST_Expand(ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer), %(cell)s))
+                      AND (%(species)s::text IS NULL OR d.especie = %(species)s)
+                      AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)
+                      AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
+                ) placed
+                WHERE ST_Intersects(shown, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
+                ORDER BY momento DESC LIMIT %(fetch)s""",
                 {"viewer": viewer, "discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
                  "north": query.north, "srid": WGS84_SRID, "species": query.species, "since": query.since, "until": query.until,
+                 "threatened": sorted(threatened_species()), "cell": THREATENED_CELL_DEGREES,
                  # One extra row tells whether the result was cut at the limit.
                  "fetch": limit + 1},
             ).fetchall()
         detections = [
             MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=DB_TO_API_STATUS[row["estado"]],
                          recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"], own=row["own"],
-                         site_name=row["site_name"])
+                         site_name=row["site_name"], generalized_m=THREATENED_CELL_METERS if row["generalized"] else None)
             for row in rows[:limit]
         ]
         return MapResponse(detections=detections, truncated=len(rows) > limit)

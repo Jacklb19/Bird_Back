@@ -1,4 +1,4 @@
-"""Synchronization, map, review, saved recordings, walks, profile and its deletion, personal record, monitoring sites, statistics, texts of the language model, CSV export and the model manifest."""
+"""Synchronization, map, review, notes, saved recordings, walks, profile and its deletion, personal record, monitoring sites, statistics, texts of the language model, reference sounds, CSV export and the model manifest."""
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -18,9 +18,11 @@ from .contracts import (
     AvatarUpload,
     BatchInput,
     BatchResponse,
+    DetectionNote,
     ExportQuery,
     MapQuery,
     MapResponse,
+    NoteInput,
     OwnSpeciesList,
     Profile,
     ProfileInput,
@@ -31,6 +33,7 @@ from .contracts import (
     RecordingUrl,
     RecordingUsage,
     RecordSummary,
+    ReferenceSounds,
     ReportInput,
     ReportQuery,
     ReviewedDetection,
@@ -52,6 +55,8 @@ from .contracts import (
     WalkInput,
     WalkPage,
     WalkPageQuery,
+    WalkPathPage,
+    WalkPathQuery,
     WalkRename,
     WalksDeleted,
     WalkUsage,
@@ -62,6 +67,8 @@ from .exports import ExportRepository
 from .language_model import GeminiWriter, TextWriter
 from .llm_usage import UsageRepository
 from .manifest import load_manifest
+from .monitoring import start_error_reports
+from .notes import NoteRepository
 from .profiles import ProfileRepository
 from .recordings import RecordingRepository
 from .records import RecordRepository
@@ -70,6 +77,7 @@ from .settings import SettingsError, get_settings
 from .site_reports import SiteReportRepository, is_current, to_report
 from .site_reports import report as write_report
 from .sites import SiteRepository
+from .sounds import reference_sounds
 from .species_cards import SpeciesCardRepository, to_card
 from .species_cards import card as write_card
 from .storage import AvatarStorage, RecordingStorage
@@ -83,10 +91,16 @@ EXPORT_FILENAME_TEMPLATE: Final = "birdnet-{site_id}.csv"
 WALK_EXPORT_FILENAME_TEMPLATE: Final = "trino-walk-{walk_id}.csv"
 RECORD_EXPORT_FILENAME: Final = "trino-records.csv"
 EXPORT_MEDIA_TYPE: Final = "text/csv; charset=utf-8"
+# Only Vercel's CDN reads this header, so a species' reference sounds are asked of xeno-canto once per period;
+# vercel.json's `Cache-Control: no-store` still keeps browsers from storing the answer.
+CDN_CACHE_HEADER: Final = "Vercel-CDN-Cache-Control"
+SECONDS_PER_DAY: Final = 86_400
 # Methods whose bodies are read into memory and therefore bounded by MAX_METADATA_BODY_BYTES.
 BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 logger = logging.getLogger(__name__)
+
+start_error_reports()
 
 
 @asynccontextmanager
@@ -161,6 +175,10 @@ def site_reports() -> SiteReportRepository:
     return SiteReportRepository()
 
 
+def notes() -> NoteRepository:
+    return NoteRepository()
+
+
 @app.exception_handler(SettingsError)
 async def invalid_configuration(_: Request, error: SettingsError) -> JSONResponse:
     # The message names the variable; it goes to the operator's logs, not to the client.
@@ -201,6 +219,15 @@ def review(detection_id: UUID, payload: ReviewInput, owner: UUID = Depends(authe
     if reviewed is None:
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
     return reviewed
+
+
+@router.put("/detections/{detection_id}/note", response_model=DetectionNote)
+def save_note(detection_id: UUID, payload: NoteInput, owner: UUID = Depends(authenticate), repo: NoteRepository = Depends(notes)) -> DetectionNote:
+    # The phone sends the whole note after the detection itself; a lost answer is repeated with the same body.
+    saved = repo.save(owner, detection_id, payload)
+    if saved is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    return saved
 
 
 @router.post("/detections/{detection_id}/recording-url", response_model=RecordingUpload)
@@ -378,6 +405,14 @@ def new_species_card(species: ScientificName, query: Annotated[TextQuery, Query(
     return write_card(owner, species, query.locale, current, cards, counter, model)
 
 
+@router.get("/species/{species}/sounds", response_model=ReferenceSounds)
+def species_sounds(species: ScientificName, response: Response) -> ReferenceSounds:
+    # Public, like the cards: recordings of other people from xeno-canto, never anyone's records.
+    sounds = reference_sounds(species)
+    response.headers[CDN_CACHE_HEADER] = f"max-age={get_settings().sounds_cache_days * SECONDS_PER_DAY}, stale-while-revalidate={SECONDS_PER_DAY}"
+    return sounds
+
+
 @router.put("/walks/{walk_id}", response_model=Walk)
 def save_walk(walk_id: UUID, payload: WalkInput, owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> Walk:
     # Only sent when the person chose to save walks in their account; the phone keeps it until this answers.
@@ -395,6 +430,12 @@ def rename_walk(walk_id: UUID, payload: WalkRename, owner: UUID = Depends(authen
 @router.get("/walks", response_model=WalkPage)
 def list_walks(query: Annotated[WalkPageQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPage:
     return repo.page(owner, query.before, query.limit)
+
+
+@router.get("/walks/paths", response_model=WalkPathPage)
+def walk_paths(query: Annotated[WalkPathQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPathPage:
+    # Declared before /walks/{walk_id}, which would otherwise take "paths" for an identifier.
+    return repo.paths(owner, query.before, query.limit)
 
 
 @router.get("/walks/{walk_id}", response_model=WalkDetail)

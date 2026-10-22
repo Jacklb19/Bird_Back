@@ -50,6 +50,10 @@ DEFAULT_LLM_USER_DAILY_QUOTA: Final = 10
 DEFAULT_LLM_DAILY_QUOTA: Final = 200
 # A species card is written again after this many days, so it follows changes in its sources.
 DEFAULT_SPECIES_CARD_MAX_AGE_DAYS: Final = 180
+# Reference sounds of each species (ADR-42): xeno-canto's API v3 asks every caller for a key of a registered account.
+DEFAULT_SOUNDS_API_URL: Final = "https://xeno-canto.org/api/3"
+# Days Vercel's CDN keeps the answer for one species, so xeno-canto is asked about it at most once a week.
+DEFAULT_SOUNDS_CACHE_DAYS: Final = 7
 # Deployment region; used for statistics when the client sends no time zone.
 DEFAULT_TIME_ZONE: Final = "America/Bogota"
 # Vercel rejects function request bodies above 4.5 MB, so a larger metadata limit could never apply.
@@ -89,6 +93,13 @@ class Settings:
     llm_daily_quota: int
     species_card_max_age_days: int
     public_data_timeout_seconds: float
+    # Reference sounds (ADR-42); without a key the route answers "not configured".
+    sounds_api_url: str
+    sounds_api_key: str | None
+    sounds_cache_days: int
+    # Error reports (ADR-43); without a DSN nothing is sent anywhere.
+    sentry_dsn: str | None
+    sentry_environment: str | None
     # Model manifest: the remote URL wins over the local file when set.
     model_manifest_path: Path
     model_manifest_url: str | None
@@ -135,6 +146,12 @@ class Settings:
             llm_daily_quota=_positive_int(environ, "LLM_DAILY_QUOTA", DEFAULT_LLM_DAILY_QUOTA),
             species_card_max_age_days=_positive_int(environ, "SPECIES_CARD_MAX_AGE_DAYS", DEFAULT_SPECIES_CARD_MAX_AGE_DAYS),
             public_data_timeout_seconds=_positive_seconds(environ, "PUBLIC_DATA_TIMEOUT_SECONDS", DEFAULT_PUBLIC_DATA_TIMEOUT_SECONDS),
+            sounds_api_url=(_text(environ, "XENO_CANTO_API_URL") or DEFAULT_SOUNDS_API_URL).rstrip("/"),
+            sounds_api_key=_text(environ, "XENO_CANTO_API_KEY"),
+            sounds_cache_days=_positive_int(environ, "SOUNDS_CACHE_DAYS", DEFAULT_SOUNDS_CACHE_DAYS),
+            sentry_dsn=_text(environ, "SENTRY_DSN"),
+            # Vercel names the environment of each deployment (production, preview), so preview errors stay apart.
+            sentry_environment=_text(environ, "VERCEL_ENV"),
             model_manifest_path=Path(manifest_path) if manifest_path else BUNDLED_MODEL_MANIFEST,
             model_manifest_url=model_manifest_url,
             model_manifest_allowed_hosts=allowed_hosts,

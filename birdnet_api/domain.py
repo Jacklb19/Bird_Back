@@ -214,10 +214,35 @@ class ExportColumn(StrEnum):
     # Appended after the original columns so files exported before the review existed keep their layout.
     MODEL_SPECIES = "model_species"
     REVIEWED_BY = "reviewed_by"
+    # Appended after the review columns, for the same reason (ADR-40).
+    INDIVIDUALS = "individuals"
+    NOTE = "note"
 
 
 # Coordinates are exported with LOCATION_GRID_DECIMALS, the precision they are stored with.
 CONFIDENCE_EXPORT_DECIMALS: Final = 3
+# Spreadsheets run a cell that starts with one of these as a formula; text written by a person (a note, a site
+# name) is exported with a leading apostrophe instead, so opening the file never runs anything.
+SPREADSHEET_FORMULA_PREFIXES: Final = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_text(value: str) -> str:
+    return f"'{value}" if value.startswith(SPREADSHEET_FORMULA_PREFIXES) else value
+
+
+# Notes and count of individuals per record (ADR-40); the CHECKs of migration 20261022000100 enforce the same bounds,
+# and the client mirrors them in NOTE_LIMITS.
+MAX_NOTE_LENGTH: Final = 500
+MAX_INDIVIDUALS: Final = 999
+
+
+# Threatened species on the collective map (ADR-41): to anyone but their author, detections of the IUCN categories
+# below are shown at the centre of a cell of this many degrees (about 11 km) instead of the ~10 m one. The list of
+# species comes from GBIF through scripts/build_threatened_species.py, never per request.
+THREATENED_CATEGORIES: Final = frozenset({"VU", "EN", "CR", "EW"})
+THREATENED_CELL_DEGREES: Final = 0.1
+# Side of that cell along a meridian, in metres, as the client shows it.
+THREATENED_CELL_METERS: Final = 11_000
 
 
 # Walks saved in the account (ADR-35). Name and path bounds match the CHECKs of migration 20261015000000; the path
@@ -227,6 +252,9 @@ MAX_WALK_POINTS: Final = 2000
 # Walks per page of the list, and the bounds of one walk's detail.
 DEFAULT_WALK_PAGE: Final = 20
 MAX_WALK_PAGE: Final = 50
+# Walks per page of their paths for the map; each carries up to MAX_WALK_POINTS points.
+DEFAULT_WALK_PATH_PAGE: Final = 10
+MAX_WALK_PATH_PAGE: Final = 20
 MAX_WALK_SPECIES: Final = 500
 MAX_WALK_PLACES: Final = 2000
 # Seconds a point's time may run past the end of its walk: the phone stamps both from the same clock, but rounds.

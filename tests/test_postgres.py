@@ -57,7 +57,7 @@ def test_rls_and_location_precision_are_enforced(database):
     with repo.transaction(other) as connection:
         assert connection.execute("UPDATE public.detections SET especie='forged' WHERE id=%s", (row.id,)).rowcount == 0
     with psycopg.connect(TEST_DATABASE_URL) as connection:
-        expected = ("profiles", "sites", "detections", "model_versions", "walks", "species_cards", "site_reports", "llm_usage")
+        expected = ("profiles", "sites", "detections", "model_versions", "walks", "species_cards", "site_reports", "llm_usage", "detection_notes")
         tables = connection.execute("SELECT relname,relrowsecurity FROM pg_class JOIN pg_namespace ON pg_class.relnamespace=pg_namespace.oid WHERE nspname='public' AND relname = ANY(%s)", (list(expected),)).fetchall()
         assert len(tables) == len(expected) and all(enabled for _, enabled in tables)
         location = connection.execute("SELECT ST_Y(ubicacion::geometry),ST_X(ubicacion::geometry) FROM public.detections WHERE id=%s", (row.id,)).fetchone()

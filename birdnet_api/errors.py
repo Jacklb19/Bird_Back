@@ -17,6 +17,7 @@ class ErrorCode(Enum):
     AUTH_REQUIRED = (HTTPStatus.UNAUTHORIZED, "Authentication required")
     AUTH_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Authentication is not configured")
     SESSION_INVALID = (HTTPStatus.UNAUTHORIZED, "Invalid or expired session")
+    SECOND_FACTOR_REQUIRED = (HTTPStatus.FORBIDDEN, "This account asks for the code of its authenticator app")
     DATABASE_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Database is not configured")
     DATABASE_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "Database operation failed; retry later")
     STATUS_CONFIDENCE_MISMATCH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Confidence and verification state disagree")
@@ -49,6 +50,8 @@ class ErrorCode(Enum):
     REPORT_NOT_FOUND = (HTTPStatus.NOT_FOUND, "No report written for this site and period yet")
     NOTHING_TO_REPORT = (HTTPStatus.UNPROCESSABLE_ENTITY, "No detections in this period to report on")
     ACCOUNT_NOT_DELETED = (HTTPStatus.BAD_GATEWAY, "Account could not be deleted; nothing was lost, retry later")
+    SOUNDS_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Reference sounds are not configured")
+    SOUNDS_UNAVAILABLE = (HTTPStatus.BAD_GATEWAY, "xeno-canto did not answer; retry later")
 
     def __init__(self, status: HTTPStatus, message: str) -> None:
         self.status = status

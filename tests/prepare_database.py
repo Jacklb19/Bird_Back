@@ -20,8 +20,12 @@ def prepare():
             CREATE TABLE auth.users (id uuid PRIMARY KEY, email text, raw_user_meta_data jsonb DEFAULT '{}');
             CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
             SELECT (nullif(current_setting('request.jwt.claims', true), '')::jsonb->>'sub')::uuid $$;
+            CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$
+            SELECT coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
+            CREATE TABLE auth.mfa_factors (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+              user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE, factor_type text NOT NULL DEFAULT 'totp', status text NOT NULL);
             GRANT USAGE ON SCHEMA auth, public TO authenticated, anon, service_role;
-            GRANT EXECUTE ON FUNCTION auth.uid() TO authenticated, anon, service_role;
+            GRANT EXECUTE ON FUNCTION auth.uid(), auth.jwt() TO authenticated, anon, service_role;
             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT,INSERT,UPDATE,DELETE ON TABLES TO authenticated, service_role;
             ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon;""")
         for migration in sorted((Path(__file__).resolve().parents[1] / "supabase" / "migrations").glob("*.sql")):
