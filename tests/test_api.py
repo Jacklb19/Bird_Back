@@ -12,7 +12,18 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from birdnet_api.app import app, repository
+from birdnet_api.auth import second_factors
 from birdnet_api.contracts import BatchResponse, MapResponse
+
+
+class MemoryFactors:
+    """People who turned the second step on; the database's list is checked in test_postgres.py."""
+
+    def __init__(self):
+        self.people = set()
+
+    def has_second_factor(self, person):
+        return person in self.people
 
 
 class MemoryRepository:
@@ -57,7 +68,9 @@ def api(monkeypatch):
     monkeypatch.setenv("SUPABASE_AUTH_ISSUER", issuer)
     monkeypatch.setenv("SUPABASE_JWT_SECRET", secret)
     repo = MemoryRepository()
+    factors = MemoryFactors()
     app.dependency_overrides[repository] = lambda: repo
+    app.dependency_overrides[second_factors] = lambda: factors
     owner = uuid4()
 
     def headers(user=owner, **changes):
@@ -169,3 +182,21 @@ def test_map_query_requires_session_and_valid_bounds(api):
     response = client.get("/v1/detections", params={**area, "species": "Turdus fuscater", "since": "2026-10-01T00:00:00Z"}, headers=headers())
     assert response.status_code == 200 and response.json() == {"detections": [], "truncated": False}
     assert repo.last_query.species == "Turdus fuscater"
+
+
+def test_an_account_with_the_second_step_needs_a_session_that_gave_the_code(api):
+    client, repo, headers, owner = api
+    factors = app.dependency_overrides[second_factors]()
+    payload = {"detections": [detection()]}
+    # Without a factor, a session from the password alone reaches everything, as before.
+    assert client.post("/v1/detections/batch", json=payload, headers=headers()).status_code == 200
+    factors.people.add(owner)
+    for level in ({}, {"aal": "aal1"}):
+        response = client.post("/v1/detections/batch", json={"detections": [detection()]}, headers=headers(**level))
+        assert response.status_code == 403
+    # Not even the deletion of the account is open to a stolen password.
+    assert client.request("DELETE", "/v1/me", json={"confirmation": "DELETE"}, headers=headers(aal="aal1")).status_code == 403
+    assert client.post("/v1/detections/batch", json={"detections": [detection()]}, headers=headers(aal="aal2")).status_code == 200
+    assert len(repo.rows) == 2
+    # A level Supabase never issues is not a session.
+    assert client.post("/v1/detections/batch", json=payload, headers=headers(aal="aal3")).status_code == 401

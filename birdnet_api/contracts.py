@@ -12,6 +12,7 @@ from .domain import (
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
     DEFAULT_WALK_PAGE,
+    DEFAULT_WALK_PATH_PAGE,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
     LOCATION_GRID_TOLERANCE,
@@ -19,9 +20,11 @@ from .domain import (
     MAX_AVATAR_BYTES,
     MAX_COMMON_NAME_LENGTH,
     MAX_CONFIDENCE,
+    MAX_INDIVIDUALS,
     MAX_LATITUDE,
     MAX_LONGITUDE,
     MAX_MODEL_VERSION_LENGTH,
+    MAX_NOTE_LENGTH,
     MAX_RECORDING_BYTES,
     MAX_RECORDING_PATH_LENGTH,
     MAX_REPORT_NAMES,
@@ -31,6 +34,7 @@ from .domain import (
     MAX_TIME_ZONE_LENGTH,
     MAX_WALK_NAME_LENGTH,
     MAX_WALK_PAGE,
+    MAX_WALK_PATH_PAGE,
     MAX_WALK_POINTS,
     RECORDING_CONTENT_TYPE,
     WALK_TIME_TOLERANCE_SECONDS,
@@ -142,6 +146,9 @@ class MapDetection(StrictModel):
     longitude: float
     own: bool
     site_name: str | None
+    # Set on someone else's detection of a threatened species: the point is the centre of a cell this many metres
+    # wide, not where it was heard (ADR-41).
+    generalized_m: int | None = None
 
 
 class MapResponse(StrictModel):
@@ -325,6 +332,29 @@ class ReviewedDetection(StrictModel):
     reviewed_by: Reviewer | None
 
 
+def _note_text(value: object) -> object:
+    # Surrounding blank lines are noise; an all-blank note is no note.
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+class NoteInput(StrictModel):
+    """Everything the person wrote about one of their detections; both null deletes the note (ADR-40).
+
+    The request carries the whole note, so repeating it after a lost answer changes nothing.
+    """
+    note: Annotated[Annotated[str, Field(max_length=MAX_NOTE_LENGTH)] | None, BeforeValidator(_note_text)] = None
+    individuals: int | None = Field(default=None, strict=True, ge=1, le=MAX_INDIVIDUALS)
+
+
+class DetectionNote(StrictModel):
+    id: UUID
+    note: str | None
+    individuals: int | None
+
+
 class TimeZoneQuery(StrictModel):
     """Same `tz` parameter and validation as the site statistics."""
     tz: TimeZoneName = Field(default_factory=_default_time_zone)
@@ -474,6 +504,26 @@ class WalkDetail(Walk):
     places: list[WalkPlace]
 
 
+class WalkPathQuery(StrictModel):
+    """Newest first, in smaller pages than the list: each walk carries its whole path."""
+    before: AwareTimestamp | None = None
+    limit: int = Field(default=DEFAULT_WALK_PATH_PAGE, ge=1, le=MAX_WALK_PATH_PAGE)
+
+
+class WalkPath(StrictModel):
+    """What a map draws of a walk: its path and where its species were heard."""
+    id: UUID
+    started_at: datetime
+    ended_at: datetime
+    track: list[TrackPoint]
+    places: list[WalkPlace]
+
+
+class WalkPathPage(StrictModel):
+    walks: list[WalkPath]
+    has_more: bool
+
+
 class WalkUsage(StrictModel):
     walks: int
     limit: int
@@ -506,6 +556,35 @@ class SpeciesCard(StrictModel):
     model: str
     generated_at: datetime
     stale: bool
+
+
+class SoundLicense(StrictModel):
+    code: str
+    url: str
+
+
+class ReferenceSound(StrictModel):
+    """One recording of xeno-canto, with what its conditions ask to show: recordist, licence and catalogue number."""
+    id: str
+    type: str
+    length_seconds: int
+    country: str | None
+    recordist: str
+    license: SoundLicense
+    quality: str
+    page_url: str
+    audio_url: str
+
+
+class ReferenceSounds(StrictModel):
+    """Reference recordings of a species, made by other people; never the caller's records (ADR-42).
+
+    `restricted` says xeno-canto withholds this species' recordings because it is vulnerable to capture.
+    """
+    species: str
+    source: str
+    restricted: bool
+    sounds: list[ReferenceSound]
 
 
 CommonName = Annotated[str, BeforeValidator(_collapse_spaces), Field(min_length=1, max_length=MAX_COMMON_NAME_LENGTH, pattern=f"^{COMMON_NAME_PATTERN}$")]

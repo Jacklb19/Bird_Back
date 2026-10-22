@@ -9,14 +9,15 @@ from datetime import datetime
 from typing import Final
 from uuid import UUID
 
-from .domain import CONFIDENCE_EXPORT_DECIMALS, DB_TO_API_REVIEWER, DB_TO_API_STATUS, LOCATION_GRID_DECIMALS, ExportColumn
+from .domain import CONFIDENCE_EXPORT_DECIMALS, DB_TO_API_REVIEWER, DB_TO_API_STATUS, LOCATION_GRID_DECIMALS, ExportColumn, spreadsheet_text
 from .errors import ErrorCode, raise_error
 from .repository import DetectionRepository
 from .settings import get_settings
 
 EXPORT_QUERY: Final = """SELECT d.id, d.especie, d.confianza, d.estado, d.momento, ST_Y(d.ubicacion::geometry) AS latitude,
-    ST_X(d.ubicacion::geometry) AS longitude, d.version_modelo, s.nombre, d.especie_modelo, d.revisada_por
+    ST_X(d.ubicacion::geometry) AS longitude, d.version_modelo, s.nombre, d.especie_modelo, d.revisada_por, n.nota, n.individuos
 FROM public.detections d LEFT JOIN public.sites s ON s.id = d.site_id
+LEFT JOIN public.detection_notes n ON n.detection_id = d.id
 WHERE d.user_id = %(owner)s
   AND (%(site)s::uuid IS NULL OR d.site_id = %(site)s)
   AND (%(started)s::timestamptz IS NULL OR d.momento >= %(started)s)
@@ -58,8 +59,10 @@ class ExportRepository(DetectionRepository):
                 ExportColumn.LATITUDE: f"{r['latitude']:.{LOCATION_GRID_DECIMALS}f}",
                 ExportColumn.LONGITUDE: f"{r['longitude']:.{LOCATION_GRID_DECIMALS}f}",
                 ExportColumn.MODEL_VERSION: r["version_modelo"],
-                ExportColumn.SITE: r["nombre"] or "",
+                ExportColumn.SITE: spreadsheet_text(r["nombre"] or ""),
                 ExportColumn.MODEL_SPECIES: r["especie_modelo"] or "",
                 ExportColumn.REVIEWED_BY: DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else "",
+                ExportColumn.INDIVIDUALS: r["individuos"] if r["individuos"] is not None else "",
+                ExportColumn.NOTE: spreadsheet_text(r["nota"] or ""),
             })
         return out.getvalue(), len(rows) > limit

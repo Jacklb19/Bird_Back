@@ -10,7 +10,7 @@ from uuid import UUID
 
 import psycopg
 
-from .contracts import Walk, WalkDetail, WalkInput, WalkPage, WalkPlace, WalkSpecies
+from .contracts import Walk, WalkDetail, WalkInput, WalkPage, WalkPath, WalkPathPage, WalkPlace, WalkSpecies
 from .domain import MAX_WALK_PLACES, MAX_WALK_SPECIES, DbDetectionStatus, track_meters
 from .errors import ErrorCode, raise_error
 from .repository import DetectionRepository
@@ -110,6 +110,30 @@ class WalkRepository(DetectionRepository):
         return WalkDetail(**walk.model_dump(), track=track["recorrido"],
                           places=[WalkPlace(species=r["especie"], latitude=r["latitude"], longitude=r["longitude"], detections=r["n"],
                                             best_confidence=r["best"], first_recorded_at=r["first"]) for r in places])
+
+    def paths(self, owner: UUID, before: datetime | None, limit: int) -> WalkPathPage:
+        """Paths and song places of the newest walks, for "Mi mapa" to draw the walks that are only in the account."""
+        with self.transaction(owner) as connection:
+            rows = connection.execute(
+                """SELECT w.id, w.inicio, w.fin, w.recorrido FROM public.walks w
+                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s)
+                ORDER BY w.inicio DESC, w.id LIMIT %(fetch)s""",
+                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+            walks = rows[:limit]
+            places = connection.execute(
+                f"""SELECT w.id AS walk, d.especie, ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude,
+                    count(*) AS n, max(d.confianza) AS best, min(d.momento) AS first
+                FROM public.walks w JOIN public.detections d ON {WALK_SONGS}
+                WHERE w.id = ANY(%(walks)s) AND w.user_id = %(owner)s
+                GROUP BY w.id, d.especie, latitude, longitude ORDER BY first, d.especie""",
+                self._params(owner, walks=[row["id"] for row in walks])).fetchall() if walks else []
+        by_walk: dict[UUID, list[WalkPlace]] = {}
+        for r in places:
+            if len(by_walk.setdefault(r["walk"], [])) < MAX_WALK_PLACES:
+                by_walk[r["walk"]].append(WalkPlace(species=r["especie"], latitude=r["latitude"], longitude=r["longitude"], detections=r["n"],
+                                                    best_confidence=r["best"], first_recorded_at=r["first"]))
+        return WalkPathPage(walks=[WalkPath(id=row["id"], started_at=row["inicio"], ended_at=row["fin"], track=row["recorrido"],
+                                            places=by_walk.get(row["id"], [])) for row in walks], has_more=len(rows) > limit)
 
     def delete(self, owner: UUID, walk_id: UUID) -> None:
         with self.transaction(owner) as connection:
