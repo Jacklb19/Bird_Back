@@ -1,0 +1,30 @@
+name: Mantener activa la base de datos
+
+# Supabase pausa los proyectos gratuitos con poca actividad en una semana; su documentación dice que suelen bastar
+# unas pocas consultas a la base al día (riesgo R-09 de la especificación). Cada día se piden a la API desplegada
+# algunas fichas de especie: es una ruta pública que lee la base, así que no hace falta ningún secreto. Si la base
+# no responde, el flujo falla y GitHub avisa por correo a quien lo mantiene.
+
+on:
+  schedule:
+    - cron: '17 11 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    name: Consultas ligeras a la base
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      API_URL: https://bird-back.vercel.app
+    steps:
+      - name: Pedir fichas de especie a la API
+        run: |
+          for species in Turdus%20fuscater Zonotrichia%20capensis Colibri%20coruscans; do
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' --retry 3 --retry-delay 10 "$API_URL/v1/species/$species/card?locale=es")
+            echo "$species: $status"
+            # 200 (ficha escrita) y 404 (aún no hay) prueban que la base respondió; 503 es una base pausada o caída.
+            case "$status" in 200|404) ;; *) exit 1 ;; esac
+          done
