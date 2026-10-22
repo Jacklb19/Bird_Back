@@ -130,4 +130,7 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `LLM_USER_DAILY_QUOTA`, `LLM_DAILY_QUOTA` | Textos nuevos por persona y en total por día; el total, por debajo del límite diario que muestra AI Studio | `10`, `200` |
 | `LLM_TIMEOUT_SECONDS`, `PUBLIC_DATA_TIMEOUT_SECONDS` | Espera del modelo y de GBIF/Wikipedia | `20`, `6` |
 | `SPECIES_CARD_MAX_AGE_DAYS` | Días tras los que una ficha se vuelve a escribir | `180` |
+| `XENO_CANTO_API_KEY` | Clave de la API v3 de xeno-canto (cuenta con correo verificado) | — (503 al pedir cantos de referencia) |
+| `XENO_CANTO_API_URL`, `SOUNDS_CACHE_DAYS` | Dirección de la API de xeno-canto y días que la CDN de Vercel guarda la respuesta de una especie | `https://xeno-canto.org/api/3`, `7` |
+| `SENTRY_DSN` | Proyecto de Sentry que recibe los errores, sin datos personales (`VERCEL_ENV` separa producción de vista previa) | — (no se envía nada) |
 | `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas y del registro personal si el cliente no envía `tz` | `America/Bogota` |
