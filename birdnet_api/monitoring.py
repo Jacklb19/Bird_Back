@@ -4,13 +4,14 @@ Off unless SENTRY_DSN is set. Only the error, its trace and the route are sent: 
 strings (the map's area is a place), identifiers in paths, user or IP address. Vercel's own logs keep requests for one
 hour on the free plan, too little to find an error after the fact.
 """
+import os
 import re
 from typing import Any, Final
 
 import sentry_sdk
 from sentry_sdk.types import Event, Hint
 
-from .settings import SettingsError, get_settings
+from .settings import Settings, SettingsError
 
 # Detections, walks and sites are named by UUID in paths; a path keeps its shape without them.
 IDENTIFIER: Final = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -20,8 +21,9 @@ REQUEST_FIELDS_KEPT: Final = frozenset({"method", "url"})
 
 
 def start_error_reports() -> None:
+    # Read without the process cache: this runs at import, before a server may set its environment (the tests' does).
     try:
-        settings = get_settings()
+        settings = Settings.from_env(os.environ)
     except SettingsError:
         # The application reports malformed configuration itself at startup.
         return

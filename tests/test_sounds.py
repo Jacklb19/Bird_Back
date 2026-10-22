@@ -123,3 +123,12 @@ def test_error_reports_carry_no_personal_data():
     cleaned = without_personal_data(event, {})
     assert cleaned["request"] == {"method": "GET", "url": "https://api/v1/walks/{id}"}
     assert {"user", "server_name", "breadcrumbs"}.isdisjoint(cleaned) and "exception" in cleaned
+
+
+def test_starting_error_reports_leaves_the_settings_to_the_server():
+    # Regression: it runs when the API is imported; caching the settings then kept a server from setting its own.
+    from birdnet_api.monitoring import start_error_reports
+
+    get_settings.cache_clear()
+    start_error_reports()
+    assert get_settings.cache_info().currsize == 0
