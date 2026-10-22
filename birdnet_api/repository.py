@@ -1,4 +1,4 @@
-"""Use one database transaction per batch; RLS remains active for every query."""
+"""Use one database transaction per batch; RLS remains active for every query except the trusted ones."""
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -22,15 +22,30 @@ JWT_CLAIMS_SETTING: Final = "request.jwt.claims"
 class DetectionRepository:
     @contextmanager
     def transaction(self, owner: UUID) -> Iterator[psycopg.Connection[dict[str, Any]]]:
+        with self._connect() as connection:
+            connection.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(AUTHENTICATED_ROLE)))
+            claims = json.dumps({SUBJECT_CLAIM: str(owner), ROLE_CLAIM: AUTHENTICATED_ROLE})
+            connection.execute("SELECT set_config(%s, %s, true)", (JWT_CLAIMS_SETTING, claims))
+            yield connection
+
+    @contextmanager
+    def trusted_transaction(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
+        """A transaction as the API's own database role, outside RLS.
+
+        Only for tables no client may write (texts of the language model and their usage counts): their policies
+        let people read, never write, so the API writes them here after checking ownership itself.
+        """
+        with self._connect() as connection:
+            yield connection
+
+    @contextmanager
+    def _connect(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
         settings = get_settings()
         if not settings.database_url:
             raise_error(ErrorCode.DATABASE_NOT_CONFIGURED)
         try:
             # Supabase's transaction pooler cannot keep server-side prepared statements.
             with psycopg.connect(settings.database_url, connect_timeout=settings.database_connect_timeout_seconds, row_factory=dict_row, prepare_threshold=None) as connection:
-                connection.execute(sql.SQL("SET LOCAL ROLE {}").format(sql.Identifier(AUTHENTICATED_ROLE)))
-                claims = json.dumps({SUBJECT_CLAIM: str(owner), ROLE_CLAIM: AUTHENTICATED_ROLE})
-                connection.execute("SELECT set_config(%s, %s, true)", (JWT_CLAIMS_SETTING, claims))
                 yield connection
         except psycopg.Error:
             raise_error(ErrorCode.DATABASE_UNAVAILABLE)

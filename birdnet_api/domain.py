@@ -247,3 +247,26 @@ def distance_meters(start: tuple[float, float], end: tuple[float, float]) -> flo
 def track_meters(track: Sequence[tuple[float, float]]) -> float:
     """Length of a path, in metres."""
     return sum(distance_meters(track[index - 1], track[index]) for index in range(1, len(track)))
+
+
+# Texts written by the language model (ADR-37): species cards and site reports, in the interface languages.
+class CardLanguage(StrEnum):
+    """Languages of the texts; the CHECKs of migration 20261021000000 list the same two."""
+
+    ES = "es"
+    EN = "en"
+
+
+# Scientific names as the acoustic models label them: genus and epithet, sometimes with a hyphen. Anything else is
+# refused before any public source or the model is asked.
+SCIENTIFIC_NAME_PATTERN: Final = r"[A-Z][a-z]+ [a-z]+(?:-[a-z]+)?"
+# Common names the client sends for a report: letters, spaces and the punctuation bird names use.
+COMMON_NAME_PATTERN: Final = r"[^\W\d_](?:[^\W\d_]|[ '\-.,()])*"
+MAX_COMMON_NAME_LENGTH: Final = 80
+# Species of a report named in the prompt; the statistics list them most heard first. The client may name them and
+# the species not heard recently.
+MAX_REPORT_SPECIES: Final = 40
+MAX_REPORT_NAMES: Final = MAX_REPORT_SPECIES + MAX_MISSING_SPECIES
+# Versions of the instructions given to the model: raising one makes the API write those texts again.
+SPECIES_CARD_INSTRUCTIONS_VERSION: Final = 1
+SITE_REPORT_INSTRUCTIONS_VERSION: Final = 1
