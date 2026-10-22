@@ -132,3 +132,11 @@ def test_starting_error_reports_leaves_the_settings_to_the_server():
     get_settings.cache_clear()
     start_error_reports()
     assert get_settings.cache_info().currsize == 0
+
+
+def test_a_malformed_dsn_never_keeps_the_api_from_starting(monkeypatch):
+    # Regression: a DSN pasted with quotes in Vercel raised at import and every route answered 500.
+    from birdnet_api.monitoring import start_error_reports
+
+    monkeypatch.setenv("SENTRY_DSN", '"https://key@o1.ingest.us.sentry.io/1"')
+    start_error_reports()
