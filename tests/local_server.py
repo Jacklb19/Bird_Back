@@ -21,7 +21,7 @@ owner = UUID("00000000-0000-4000-8000-000000000004")
 with psycopg.connect(TEST_DATABASE_URL) as connection:
     connection.execute("INSERT INTO auth.users(id,email) VALUES (%s,'sprint4@example.invalid') ON CONFLICT DO NOTHING", (owner,))
 
-state = {"lose_ack": False, "lose_walk_ack": False}
+state = {"lose_ack": False, "lose_walk_ack": False, "lose_note_ack": False}
 
 
 @app.middleware("http")
@@ -32,6 +32,9 @@ async def lose_response(request: Request, call_next):
         return JSONResponse({"detail": "Simulated response loss after database commit"}, status_code=503)
     if request.method == "PUT" and "/v1/walks/" in request.url.path and response.status_code == 200 and state["lose_walk_ack"]:
         state["lose_walk_ack"] = False
+        return JSONResponse({"detail": "Simulated response loss after database commit"}, status_code=503)
+    if request.method == "PUT" and request.url.path.endswith("/note") and response.status_code == 200 and state["lose_note_ack"]:
+        state["lose_note_ack"] = False
         return JSONResponse({"detail": "Simulated response loss after database commit"}, status_code=503)
     return response
 
@@ -61,8 +64,15 @@ def lose_walk_ack():
     return {"ok": True}
 
 
+@app.post("/test/lose-note-ack")
+def lose_note_ack():
+    state["lose_note_ack"] = True
+    return {"ok": True}
+
+
 @app.get("/test/counts")
 def counts():
     with psycopg.connect(TEST_DATABASE_URL) as connection:
         return {"detections": connection.execute("SELECT count(*) FROM public.detections WHERE user_id=%s", (owner,)).fetchone()[0],
-                "walks": connection.execute("SELECT count(*) FROM public.walks WHERE user_id=%s", (owner,)).fetchone()[0]}
+                "walks": connection.execute("SELECT count(*) FROM public.walks WHERE user_id=%s", (owner,)).fetchone()[0],
+                "notes": connection.execute("SELECT count(*) FROM public.detection_notes WHERE user_id=%s", (owner,)).fetchone()[0]}
