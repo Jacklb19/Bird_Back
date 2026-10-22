@@ -140,3 +140,16 @@ def test_a_malformed_dsn_never_keeps_the_api_from_starting(monkeypatch):
 
     monkeypatch.setenv("SENTRY_DSN", '"https://key@o1.ingest.us.sentry.io/1"')
     start_error_reports()
+
+
+def test_request_urls_with_keys_never_reach_the_logs(api, monkeypatch, caplog):  # noqa: F811
+    # Regression: httpx logged xeno-canto's URL, whose query carries the API key, and Vercel kept it.
+    client, *_ = api
+    monkeypatch.setenv("XENO_CANTO_API_KEY", "secret-key")
+    get_settings.cache_clear()
+    original = httpx.Client
+    monkeypatch.setattr(sounds.httpx, "Client", lambda **kwargs: original(transport=httpx.MockTransport(
+        lambda _: httpx.Response(200, json={"recordings": []})), **kwargs))
+    with caplog.at_level("INFO"):
+        assert client.get(f"/v1/species/{SPECIES}/sounds").status_code == 200
+    assert "secret-key" not in caplog.text

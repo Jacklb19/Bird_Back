@@ -99,6 +99,9 @@ SECONDS_PER_DAY: Final = 86_400
 BOUNDED_BODY_METHODS: Final = frozenset({"POST", "PATCH", "PUT", "DELETE"})
 
 logger = logging.getLogger(__name__)
+# httpx logs every request URL at INFO, and Vercel keeps INFO: xeno-canto's API takes its key in the query string, so
+# the key ended up in the logs. Only httpx's warnings and errors are kept.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 start_error_reports()
 
