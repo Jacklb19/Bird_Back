@@ -23,6 +23,8 @@ from .contracts import (
     MapQuery,
     MapResponse,
     NoteInput,
+    OwnDetectionPage,
+    OwnDetectionQuery,
     OwnSpeciesList,
     Profile,
     ProfileInput,
@@ -333,6 +335,12 @@ def delete_recordings(owner: UUID = Depends(authenticate), saved: RecordingRepos
 @router.get("/me/summary", response_model=RecordSummary)
 def record_summary(query: Annotated[TimeZoneQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> RecordSummary:
     return repo.summary(owner, query.tz)
+
+
+@router.get("/me/detections", response_model=OwnDetectionPage)
+def own_detections(query: Annotated[OwnDetectionQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionPage:
+    # "Mi mapa" draws from the phone; this adds the songs it no longer keeps (older ones, or from another phone).
+    return repo.located(owner, query.before, query.limit)
 
 
 @router.get("/me/species", response_model=OwnSpeciesList)

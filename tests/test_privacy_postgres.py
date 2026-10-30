@@ -154,3 +154,20 @@ def test_walk_paths_carry_track_and_places_page_by_page(database):  # noqa: F811
     assert [walk.id for walk in rest.walks] == [first_id] and not rest.has_more
     assert len(rest.walks[0].track) == 2 and [(p.species, p.detections) for p in rest.walks[0].places] == [("Turdus fuscater", 1)]
     assert walks.paths(other, None, 10).walks == []
+
+
+def test_own_located_songs_page_by_page_without_discarded_or_foreign(database):  # noqa: F811
+    from birdnet_api.records import RecordRepository
+
+    repo, owner, other = database
+    rows = [DetectionInput.model_validate(detection(recorded_at=f"2026-10-0{day}T12:00:00Z")) for day in (1, 2, 3)]
+    repo.batch(owner, rows)
+    repo.batch(other, [DetectionInput.model_validate(detection())])
+    with repo.transaction(owner) as connection:
+        connection.execute("UPDATE public.detections SET estado='descartada' WHERE id=%s", (rows[1].id,))
+    records = RecordRepository()
+    first = records.located(owner, None, 1)
+    assert [row.id for row in first.detections] == [rows[2].id] and first.has_more
+    rest = records.located(owner, first.detections[0].recorded_at, 10)
+    assert [row.id for row in rest.detections] == [rows[0].id] and not rest.has_more
+    assert (rest.detections[0].latitude, rest.detections[0].longitude) == (4.679, -74.123)

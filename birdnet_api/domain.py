@@ -110,6 +110,10 @@ HOURS_PER_DAY: Final = 24
 MAX_OWN_SPECIES: Final = 2000
 MAX_SPECIES_CELLS: Final = 500
 MAX_RECENT_DETECTIONS: Final = 20
+# The caller's located songs for "Mi mapa", newest first, in pages: those the phone no longer keeps (synchronized before
+# it kept their cell, or from another phone) come from here.
+DEFAULT_OWN_DETECTION_PAGE: Final = 1000
+MAX_OWN_DETECTION_PAGE: Final = 2000
 
 
 def is_time_zone(name: str) -> bool:
