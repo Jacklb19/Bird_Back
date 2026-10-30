@@ -12,6 +12,7 @@ from .domain import (
     CONFIDENCE_DISCARD_BELOW,
     DEFAULT_STATS_PERIOD,
     DEFAULT_WALK_PAGE,
+    DEFAULT_OWN_DETECTION_PAGE,
     DEFAULT_WALK_PATH_PAGE,
     HOURS_PER_DAY,
     LOCATION_GRID_DECIMALS,
@@ -21,6 +22,7 @@ from .domain import (
     MAX_COMMON_NAME_LENGTH,
     MAX_CONFIDENCE,
     MAX_INDIVIDUALS,
+    MAX_OWN_DETECTION_PAGE,
     MAX_LATITUDE,
     MAX_LONGITUDE,
     MAX_MODEL_VERSION_LENGTH,
@@ -381,6 +383,28 @@ class OwnSpecies(StrictModel):
 
 class OwnSpeciesList(StrictModel):
     species: list[OwnSpecies]
+
+
+class OwnDetectionQuery(StrictModel):
+    """Newest first; `before` is the time of the last song already received."""
+    before: AwareTimestamp | None = None
+    limit: int = Field(default=DEFAULT_OWN_DETECTION_PAGE, ge=1, le=MAX_OWN_DETECTION_PAGE)
+
+
+class OwnDetection(StrictModel):
+    """One of the caller's located songs, with the species a person's review gave it."""
+    id: UUID
+    species: str
+    confidence: float
+    status: MapDetectionStatus
+    recorded_at: datetime
+    latitude: float
+    longitude: float
+
+
+class OwnDetectionPage(StrictModel):
+    detections: list[OwnDetection]
+    has_more: bool
 
 
 class SpeciesSite(StrictModel):

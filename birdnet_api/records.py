@@ -3,10 +3,11 @@
 Shared detections are readable by every signed-in user (collective map), so each query filters by owner explicitly.
 Discarded detections never count as presence.
 """
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from .contracts import OwnSpecies, OwnSpeciesList, RecordSummary, SpeciesCell, SpeciesDetection, SpeciesRecord, SpeciesSite
+from .contracts import OwnDetection, OwnDetectionPage, OwnSpecies, OwnSpeciesList, RecordSummary, SpeciesCell, SpeciesDetection, SpeciesRecord, SpeciesSite
 from .domain import (
     DB_TO_API_REVIEWER,
     DB_TO_API_STATUS,
@@ -37,6 +38,23 @@ class RecordRepository(DetectionRepository):
             sites = connection.execute("SELECT count(*) AS n FROM public.sites WHERE owner_id = %(owner)s", params).fetchone()
         return RecordSummary(detections=totals["detections"], species=totals["species"], sites=sites["n"],
                              first_recorded_at=totals["first"], last_recorded_at=totals["last"], active_days=totals["days"])
+
+    def located(self, owner: UUID, before: datetime | None, limit: int) -> OwnDetectionPage:
+        """The caller's songs with a place, newest first; discarded ones are not presence and stay out."""
+        with self.transaction(owner) as connection:
+            rows = connection.execute(
+                f"""SELECT d.id, d.especie, d.confianza, d.estado, d.momento,
+                    ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude
+                FROM public.detections d WHERE {OWN_RECORD} AND d.ubicacion IS NOT NULL
+                  AND (%(before)s::timestamptz IS NULL OR d.momento < %(before)s)
+                ORDER BY d.momento DESC, d.id LIMIT %(fetch)s""",
+                # One extra row tells whether another page follows.
+                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+        return OwnDetectionPage(detections=[
+            OwnDetection(id=r["id"], species=r["especie"], confidence=r["confianza"], status=DB_TO_API_STATUS[r["estado"]],
+                         recorded_at=r["momento"], latitude=r["latitude"], longitude=r["longitude"])
+            for r in rows[:limit]
+        ], has_more=len(rows) > limit)
 
     def species(self, owner: UUID) -> OwnSpeciesList:
         with self.transaction(owner) as connection:
