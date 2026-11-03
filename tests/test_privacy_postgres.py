@@ -262,3 +262,13 @@ def test_renaming_and_deleting_a_site_keeps_its_songs(database):  # noqa: F811
     assert places.list_sites(owner) == []
     with psycopg.connect(TEST_DATABASE_URL) as connection:
         assert connection.execute("SELECT site_id FROM public.detections WHERE id=%s", (row.id,)).fetchone() == (None,)
+
+
+def test_others_see_only_the_hour_of_a_shared_song(database):  # noqa: F811
+    repo, owner, other = database
+    row = DetectionInput.model_validate(detection(recorded_at="2026-10-06T12:34:56Z"))
+    repo.batch(owner, [row])
+    area = {"west": -74.2, "south": 4.6, "east": -74.0, "north": 4.8}
+    seen = {viewer: next(d for d in repo.map(viewer, MapQuery(**area)).detections if d.id == row.id) for viewer in (owner, other)}
+    assert seen[owner].recorded_at.isoformat() == "2026-10-06T12:34:56+00:00"
+    assert seen[other].recorded_at.isoformat() == "2026-10-06T12:00:00+00:00"

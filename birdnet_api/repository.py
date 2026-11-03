@@ -144,11 +144,14 @@ class DetectionRepository:
         # Site names are private too: RLS already hides foreign sites, and the CASE keeps them out even without it.
         # Someone else's detection of a threatened species is placed at the centre of its coarse cell, and the visible
         # area is matched against that point: matched against the real one, narrowing the area would find the cell.
+        # Someone else's songs carry only their hour: to the second, a run of them traces when that person walks by (ADR-44).
         with self.transaction(viewer) as connection:
             rows = connection.execute(
                 """SELECT id, especie, confianza, estado, momento, ST_Y(shown) AS latitude, ST_X(shown) AS longitude, own, site_name, generalized
                 FROM (
-                    SELECT d.id, d.especie, d.confianza, d.estado, d.momento, d.user_id = %(viewer)s AS own,
+                    SELECT d.id, d.especie, d.confianza, d.estado,
+                        CASE WHEN d.user_id = %(viewer)s THEN d.momento ELSE date_trunc('hour', d.momento) END AS momento,
+                        d.user_id = %(viewer)s AS own,
                         CASE WHEN d.user_id = %(viewer)s THEN s.nombre END AS site_name,
                         (d.user_id <> %(viewer)s AND d.especie = ANY(%(threatened)s)) AS generalized,
                         CASE WHEN d.user_id <> %(viewer)s AND d.especie = ANY(%(threatened)s)

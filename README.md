@@ -16,7 +16,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `DELETE /v1/detections/{id}/recording` | Borra la grabación de Storage y su enlace | Sí |
 | `PUT /v1/detections/{id}/note` | Nota e individuos de una detección propia (`{"note", "individuals"}`, hasta 500 caracteres y de 1 a 999; los dos `null` la borran). Idempotente; 404 si no es propia. Privada: nunca sale en el mapa | Sí |
 | `GET /v1/me/recordings`, `DELETE /v1/me/recordings` | Uso (`recordings`, `bytes`, `limit_bytes`) y borrado de todas las grabaciones propias | Sí |
-| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas; `generalized_m` marca una especie amenazada de otra persona, mostrada en el centro de una celda de ~11 km | Sí |
+| `GET /v1/detections` | Detecciones del mapa por área, especie y periodo: las compartidas por otras personas y todas las propias; `own` marca las propias y `site_name` solo se llena en ellas; `generalized_m` marca una especie amenazada de otra persona, mostrada en el centro de una celda de ~11 km; los cantos de otras personas llevan solo la hora en punto (ADR-44) | Sí |
 | `GET /v1/me` | Perfil propio: alias, URL firmada temporal de la foto y fecha de creación | Sí |
 | `PATCH /v1/me` | Cambia alias o foto (campos omitidos se conservan; `null` borra) | Sí |
 | `DELETE /v1/me` | Borra la cuenta entera (`{"confirmation": "DELETE"}`): primero los objetos de Storage (foto y grabaciones), luego el usuario de Auth, cuyo borrado arrastra perfil, detecciones, sitios, caminatas, informes y uso del modelo. 204; 502 si falla un paso (repetirlo es seguro) | Sí |
