@@ -116,7 +116,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 # Deployed as its own project: routes live at the root and the web app proxies /api/* here.
-app = FastAPI(title="Trino API", docs_url=None, redoc_url=None, lifespan=lifespan)
+# Without published docs or schema: the only client is the web app, and the routes are listed in the README.
+app = FastAPI(title="Trino API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 router = APIRouter(prefix=API_PREFIX)
 
 

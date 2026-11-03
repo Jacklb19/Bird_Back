@@ -12,6 +12,8 @@ def test_routes_live_at_the_api_root(api):
     client, _, _, _ = api
     assert client.get("/v1/health").json() == {"status": "ok"}
     assert client.get("/v1/model/latest").status_code == 200
+    # No published schema or docs: they listed every route to anyone (audit of 2026-11-02).
+    assert all(client.get(path).status_code == 404 for path in ("/openapi.json", "/docs", "/redoc"))
 
 
 def test_shipped_manifest_is_complete():
