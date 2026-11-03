@@ -27,7 +27,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/species` | Especies propias con detecciones, mejor confianza, primera y última y sitios | Sí |
 | `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
-| `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio | Sí |
+| `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio, solo con los cantos de su dueño | Sí |
 | `GET /v1/sites/{id}/report?period=&tz=&locale=` | Último informe redactado del sitio para ese periodo e idioma, con las cifras de las que salió; `stale` si cambiaron. 404 si no hay | Sí |
 | `POST /v1/sites/{id}/report` | Redacta el informe solo cuando la persona lo pide (`{"period", "tz", "locale", "names"}`; `names`: nombres comunes de las especies). Con las mismas cifras devuelve el guardado sin llamar al modelo. 422 si no hay cantos en el periodo, 429 si se acabó el tope del día, 503 si el modelo no respondió o su texto escribió una cifra que no está en las estadísticas | Sí |
 | `GET /v1/species/{nombre científico}/card?locale=` | Ficha divulgativa ya escrita de la especie; `stale` si toca escribirla de nuevo. 404 si no hay | No |
@@ -49,6 +49,11 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - Reintentar la sincronización no modifica una detección ya guardada; para cambiar lo ya subido se usa `POST /v1/me/sharing`.
 - Las especies amenazadas (VU, EN, CR y EW de la Lista Roja global) de otras personas se devuelven en el centro de su celda de 0,1°, y el área pedida se compara con ese centro (ADR-41). La lista está en `birdnet_api/threatened_species.json` y se regenera con `python scripts/build_threatened_species.py ../frontend/public/models/labels.txt ../frontend/public/models/birdnet_plus_labels.txt`.
 
+### Propiedad de los datos
+
+- Una detección solo puede apuntar a un sitio de su mismo autor (clave foránea compuesta `(site_id, user_id)`) y una nota solo puede quedar en una detección de su dueño, también al editarla. Una clave foránea simple no mira RLS (ADR-44, migración `20261102000000_ownership_and_pending_uploads.sql`).
+- La API no publica `/openapi.json`, `/docs` ni `/redoc`; las rutas son las de esta tabla.
+
 ### Verificación en dos pasos
 
 - Una cuenta con un factor TOTP verificado necesita una sesión `aal2` (que dio el código) para cualquier ruta con sesión; si no, 403 (ADR-39). La API pasa el nivel a las claims de cada transacción y las políticas RLS restrictivas de la migración `20261022000000_second_factor.sql` lo exigen también en la base.
@@ -56,7 +61,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ### Revisión y grabaciones
 
 - Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` registra quién revisó: hoy, siempre la persona. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
-- Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla.
+- Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla. Una subida firmada y aún no enlazada (`recording_uploads`) cuenta como el clip más grande que admite el bucket hasta que se enlaza o se borra, para que subir sin enlazar no llene Storage (ADR-44).
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
 ### Fichas e informes del modelo de lenguaje (ADR-37)
