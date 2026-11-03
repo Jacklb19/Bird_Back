@@ -24,6 +24,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `POST /v1/me/sharing` | Comparte o deja de compartir todas las detecciones propias ya subidas (`{"shared": bool}` → `{"updated": n}`, las que cambiaron) | Sí |
 | `GET /v1/me/summary?tz=` | Totales propios sin descartadas: detecciones, especies, sitios, primera y última, días activos | Sí |
 | `GET /v1/me/detections?before=&limit=` | Cantos propios con ubicación, sin descartados y con la especie revisada, del más reciente al más antiguo (1.000 por página, máx. 2.000); para que «Mi mapa» dibuje los que el teléfono ya no guarda | Sí |
+| `GET /v1/me/detections/{id}` | Un canto propio con su revisión, su nota, su lugar y si tiene grabación, también descartado; para revisarlo y anotarlo desde un teléfono que no lo guarda (ADR-44). 404 si no es propio | Sí |
 | `GET /v1/me/species` | Especies propias con detecciones, mejor confianza, primera y última y sitios | Sí |
 | `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |

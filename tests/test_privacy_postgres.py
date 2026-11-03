@@ -221,3 +221,27 @@ def test_own_located_songs_page_by_page_without_discarded_or_foreign(database): 
     rest = records.located(owner, first.detections[0].recorded_at, 10)
     assert [row.id for row in rest.detections] == [rows[0].id] and not rest.has_more
     assert (rest.detections[0].latitude, rest.detections[0].longitude) == (4.679, -74.123)
+
+def test_one_own_detection_with_review_note_and_recording_from_any_phone(database):  # noqa: F811
+    from birdnet_api.domain import ReviewAction
+    from birdnet_api.recordings import RecordingRepository
+    from birdnet_api.records import RecordRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    row = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [row])
+    records = RecordRepository()
+    plain = records.detail(owner, row.id)
+    assert plain is not None and (plain.site_name, plain.note, plain.has_recording, plain.reviewed_by) == ("Finca", None, False, None)
+    repo.review(owner, row.id, ReviewAction.CORRECT, "Zonotrichia capensis")
+    NoteRepository().save(owner, row.id, NoteInput(note="dos", individuals=2))
+    RecordingRepository().link(owner, row.id, f"{owner}/{row.id}.webm", 500, 1000)
+    reviewed = records.detail(owner, row.id)
+    assert reviewed is not None
+    assert (reviewed.species, reviewed.model_species, reviewed.status, reviewed.reviewed_by) == ("Zonotrichia capensis", "Turdus fuscater", "corrected", "person")
+    assert (reviewed.note, reviewed.individuals, reviewed.has_recording) == ("dos", 2, True)
+    # A discarded song is still the person's to see and change; another account never sees it, shared or not.
+    repo.review(owner, row.id, ReviewAction.DISCARD, None)
+    assert records.detail(owner, row.id).status == "discarded"
+    assert records.detail(other, row.id) is None

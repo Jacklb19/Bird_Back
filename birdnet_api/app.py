@@ -23,6 +23,7 @@ from .contracts import (
     MapQuery,
     MapResponse,
     NoteInput,
+    OwnDetectionDetail,
     OwnDetectionPage,
     OwnDetectionQuery,
     OwnSpeciesList,
@@ -351,6 +352,15 @@ def record_summary(query: Annotated[TimeZoneQuery, Query()], owner: UUID = Depen
 def own_detections(query: Annotated[OwnDetectionQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionPage:
     # "Mi mapa" draws from the phone; this adds the songs it no longer keeps (older ones, or from another phone).
     return repo.located(owner, query.before, query.limit)
+
+
+@router.get("/me/detections/{detection_id}", response_model=OwnDetectionDetail)
+def own_detection(detection_id: UUID, owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionDetail:
+    # A song this phone does not keep can still be reviewed and annotated here; the review and the note use their own routes.
+    found = repo.detail(owner, detection_id)
+    if found is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    return found
 
 
 @router.get("/me/species", response_model=OwnSpeciesList)

@@ -407,6 +407,26 @@ class OwnDetectionPage(StrictModel):
     has_more: bool
 
 
+class OwnDetectionDetail(StrictModel):
+    """One of the caller's detections with everything a person can review and write on it, from any phone (ADR-44).
+
+    Discarded ones are returned too: the person may change their mind.
+    """
+    id: UUID
+    species: str
+    model_species: str | None
+    confidence: float
+    status: DetectionStatus
+    reviewed_by: Reviewer | None
+    recorded_at: datetime
+    latitude: float
+    longitude: float
+    site_name: str | None
+    note: str | None
+    individuals: int | None
+    has_recording: bool
+
+
 class SpeciesSite(StrictModel):
     id: UUID
     name: str
