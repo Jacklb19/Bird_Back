@@ -43,9 +43,12 @@ class SiteRepository(DetectionRepository):
             raise_error(ErrorCode.SITE_NOT_FOUND)
 
     def stats(self, owner: UUID, site_id: UUID, period: StatsPeriod, since: datetime | None, previous_since: datetime | None, until: datetime, tz: str) -> SiteStats:
-        # Discarded detections never count as presence.
-        window = "site_id = %(site)s AND estado <> %(discarded)s AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s) AND momento < %(until)s"
-        params = {"site": site_id, "since": since, "until": until, "tz": tz, "previous": previous_since, "discarded": DbDetectionStatus.DISCARDED.value}
+        # Discarded detections never count as presence. Only the owner's own songs count: a site is private, and the
+        # filter does not rely on every writer having respected it (ADR-44).
+        place = "site_id = %(site)s AND user_id = %(owner)s AND estado <> %(discarded)s"
+        window = f"{place} AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s) AND momento < %(until)s"
+        params = {"site": site_id, "owner": owner, "since": since, "until": until, "tz": tz, "previous": previous_since,
+                  "discarded": DbDetectionStatus.DISCARDED.value}
         with self.transaction(owner) as connection:
             self._require_site(connection, site_id)
             species = connection.execute(
@@ -57,13 +60,13 @@ class SiteRepository(DetectionRepository):
                 f"""SELECT extract(hour FROM momento AT TIME ZONE %(tz)s)::int AS h, count(*) AS n
                 FROM public.detections WHERE {window} GROUP BY h""", params).fetchall()
             history = connection.execute(
-                """SELECT especie, min(momento) AS first, max(momento) AS last
-                FROM public.detections WHERE site_id = %(site)s AND estado <> %(discarded)s GROUP BY especie""", params).fetchall()
+                f"""SELECT especie, min(momento) AS first, max(momento) AS last
+                FROM public.detections WHERE {place} GROUP BY especie""", params).fetchall()
             previous = None
             if since is not None and previous_since is not None:
                 previous = connection.execute(
-                    """SELECT count(DISTINCT especie) AS n FROM public.detections
-                    WHERE site_id = %(site)s AND estado <> %(discarded)s AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone()["n"]
+                    f"""SELECT count(DISTINCT especie) AS n FROM public.detections
+                    WHERE {place} AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone()["n"]
         first_seen = {r["especie"]: r["first"] for r in history}
         hourly = [0] * HOURS_PER_DAY
         for row in hours:

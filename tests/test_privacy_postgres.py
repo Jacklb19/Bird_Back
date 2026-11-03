@@ -1,6 +1,7 @@
 """Second step of sign-in, private notes, threatened species on the map and walk paths, against PostgreSQL and RLS."""
 import secrets
 import time
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import jwt
@@ -10,10 +11,11 @@ from fastapi.testclient import TestClient
 
 from birdnet_api import repository as repository_module
 from birdnet_api.app import app
-from birdnet_api.contracts import DetectionInput, MapQuery, NoteInput, WalkInput
-from birdnet_api.domain import THREATENED_CELL_METERS
+from birdnet_api.contracts import DetectionInput, MapQuery, NoteInput, SiteInput, WalkInput
+from birdnet_api.domain import THREATENED_CELL_METERS, StatsPeriod
 from birdnet_api.exports import ExportRepository
 from birdnet_api.notes import NoteRepository
+from birdnet_api.sites import SiteRepository
 from birdnet_api.session import SECOND_FACTOR, session_assurance
 from birdnet_api.walks import WalkRepository
 from tests.prepare_database import TEST_DATABASE_URL
@@ -22,7 +24,7 @@ from tests.test_postgres import database  # noqa: F401  (fixture)
 from tests.test_postgres import pytestmark  # noqa: F401  (same isolated database only)
 
 # Tables that hold data of a person; the public ones (species cards, model versions) need no second step.
-PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes")
+PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes", "recording_uploads")
 
 
 def add_factor(person, status="verified"):
@@ -114,6 +116,54 @@ def test_notes_cannot_hang_from_someone_elses_detection(database):  # noqa: F811
         connection.execute("SET ROLE authenticated")
         connection.execute("SELECT set_config('request.jwt.claims', %s, true)", (f'{{"sub":"{other}","role":"authenticated"}}',))
         connection.execute("INSERT INTO public.detection_notes(detection_id,user_id,nota) VALUES (%s,%s,'x')", (row.id, other))
+
+
+def as_person(connection, person):
+    connection.execute("SET ROLE authenticated")
+    connection.execute("SELECT set_config('request.jwt.claims', %s, true)", (f'{{"sub":"{person}","role":"authenticated"}}',))
+
+
+def test_a_note_cannot_move_onto_someone_elses_detection(database):  # noqa: F811
+    repo, owner, other = database
+    mine, theirs = (DetectionInput.model_validate(detection()) for _ in range(2))
+    repo.batch(owner, [mine])
+    repo.batch(other, [theirs])
+    NoteRepository().save(other, theirs.id, NoteInput(note="mía"))
+    # A moved note would also take the primary key of the owner's detection, so the owner could no longer write theirs.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), psycopg.connect(TEST_DATABASE_URL) as connection:
+        as_person(connection, other)
+        connection.execute("UPDATE public.detection_notes SET detection_id=%s WHERE detection_id=%s", (mine.id, theirs.id))
+    assert NoteRepository().save(owner, mine.id, NoteInput(note="la del dueño")) is not None
+
+
+def test_a_detection_cannot_name_someone_elses_site(database):  # noqa: F811
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    forged = DetectionInput.model_validate(detection())
+    # A plain foreign key ignores RLS: written straight to the database, this row would enter the owner's statistics.
+    with pytest.raises(psycopg.errors.ForeignKeyViolation), psycopg.connect(TEST_DATABASE_URL) as connection:
+        as_person(connection, other)
+        connection.execute(
+            """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,ubicacion,version_modelo)
+            VALUES (%s,%s,%s,'Turdus fuscater',0.9,'verificada',ST_GeogFromText('POINT(-74.123 4.679)'),'birdnet-v2.4:arm')""",
+            (forged.id, other, site.id))
+    own = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [own])
+    stats = SiteRepository().stats(owner, site.id, StatsPeriod.ALL, None, None, datetime.now(UTC), "UTC")
+    assert stats.detections == 1
+    # Deleting the site keeps the song and its author; only the site goes.
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM public.sites WHERE id=%s", (site.id,))
+        assert connection.execute("SELECT site_id, user_id FROM public.detections WHERE id=%s", (own.id,)).fetchone() == (None, owner)
+
+
+@pytest.mark.parametrize("column", ["especie", "version_modelo"])
+def test_free_text_of_a_detection_is_bounded_in_the_database(database, column):  # noqa: F811
+    repo, owner, _ = database
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    with pytest.raises(psycopg.errors.CheckViolation), psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute(f"UPDATE public.detections SET {column}=%s WHERE id=%s", ("x" * 201, row.id))
 
 
 def test_threatened_species_reach_others_only_in_a_coarse_cell(database, monkeypatch):  # noqa: F811
