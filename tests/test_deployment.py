@@ -3,9 +3,12 @@ import json
 from pathlib import Path
 
 from birdnet_api.domain import AUDIO_SAMPLE_RATE_HZ, AUDIO_WINDOW_SAMPLES
+from birdnet_api.model_species import MODEL_SPECIES_FILE, model_species
 from tests.test_api import api
 
 BACKEND = Path(__file__).resolve().parents[1]
+# Versioned files stay under 1 MB (AGENTS.md).
+MAX_VERSIONED_BYTES = 1_000_000
 
 
 def test_routes_live_at_the_api_root(api):
@@ -30,3 +33,9 @@ def test_function_has_explicit_budget_and_exclusions():
     assert "tests/**" in function["excludeFiles"]
     assert config["rewrites"][0] == {"source": "/(.*)", "destination": "/api/index.py"}
 
+
+
+def test_shipped_model_species_list_is_valid_and_small():
+    species = model_species()
+    assert "Turdus fuscater" in species and "Engine" not in species and len(species) > 6000
+    assert MODEL_SPECIES_FILE.stat().st_size < MAX_VERSIONED_BYTES

@@ -33,8 +33,8 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/sites/{id}/report?period=&tz=&locale=` | Último informe redactado del sitio para ese periodo e idioma, con las cifras de las que salió; `stale` si cambiaron. 404 si no hay | Sí |
 | `POST /v1/sites/{id}/report` | Redacta el informe solo cuando la persona lo pide (`{"period", "tz", "locale", "names"}`; `names`: nombres comunes de las especies). Con las mismas cifras devuelve el guardado sin llamar al modelo. 422 si no hay cantos en el periodo, 429 si se acabó el tope del día, 503 si el modelo no respondió o su texto escribió una cifra que no está en las estadísticas | Sí |
 | `GET /v1/species/{nombre científico}/card?locale=` | Ficha divulgativa ya escrita de la especie; `stale` si toca escribirla de nuevo. 404 si no hay | No |
-| `POST /v1/species/{nombre científico}/card?locale=` | Devuelve la ficha guardada o la escribe con el modelo a partir de GBIF y Wikipedia. 422 si el nombre no es una especie de ave que GBIF conozca, 429 si se acabó el tope, 502/503 si una fuente o el modelo no respondieron | Sí |
-| `GET /v1/species/{nombre científico}/sounds` | Hasta 3 cantos de referencia de xeno-canto (calidad A o B, menos de 60 s) con grabador, licencia, enlace y número de catálogo, sin lugar; `restricted` si xeno-canto los protege. La CDN de Vercel guarda la respuesta. 503 sin `XENO_CANTO_API_KEY`, 502 si xeno-canto falla | No |
+| `POST /v1/species/{nombre científico}/card?locale=` | Devuelve la ficha guardada o la escribe con el modelo a partir de GBIF y Wikipedia. 404 si la especie no está entre las etiquetas de los modelos acústicos (sin gastar el tope), 422 si el nombre no es una especie de ave que GBIF conozca, 429 si se acabó el tope, 502/503 si una fuente o el modelo no respondieron | Sí |
+| `GET /v1/species/{nombre científico}/sounds` | Hasta 3 cantos de referencia de xeno-canto (calidad A o B, menos de 60 s) con grabador, licencia, enlace y número de catálogo, sin lugar; `restricted` si xeno-canto los protege. La CDN de Vercel guarda la respuesta. 404 sin preguntar a xeno-canto si la especie no está entre las etiquetas de los modelos acústicos, 503 sin `XENO_CANTO_API_KEY`, 502 si xeno-canto falla | No |
 | `GET /v1/walks/paths?before=&limit=` | Recorridos y lugares de las caminatas propias, de 10 en 10 (máx. 20), para «Mi mapa» | Sí |
 | `PUT /v1/walks/{id}` | Guarda una caminata terminada (`name` opcional, `started_at`, `ended_at`, `track` con celdas `[lat, lon]` o `[lat, lon, segundos]`, hasta 2000). Idempotente con el UUID del teléfono; responde el resumen. 409 si el identificador es de otra cuenta, 507 si la cuenta llenó su tope | Sí |
 | `PATCH /v1/walks/{id}` | Cambia el nombre (`{"name"}`; `null` vuelve al que la app arma con la fecha) | Sí |
@@ -93,6 +93,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 - `api/index.py`: punto de entrada de la función de Vercel.
 - `supabase/migrations/`: esquema de la base de datos (ejecutar en orden en el SQL Editor de Supabase).
 - `tests/`: pruebas con pytest; las de PostGIS usan una base local en Docker.
+- `scripts/build_model_species.py`: regenera `birdnet_api/model_species.json`, las especies de las etiquetas de los modelos acústicos, que las rutas de cantos de referencia y de nueva ficha aceptan; correrlo cuando cambien las etiquetas.
 - `scripts/lock-python.py`: regenera `requirements.txt` y `requirements-dev.lock.txt` desde `requirements.in` y `requirements-dev.txt`.
 
 ## Desarrollo local

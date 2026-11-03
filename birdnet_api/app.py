@@ -71,6 +71,7 @@ from .exports import ExportRepository
 from .language_model import GeminiWriter, TextWriter
 from .llm_usage import UsageRepository
 from .manifest import load_manifest
+from .model_species import require_model_species
 from .monitoring import start_error_reports
 from .notes import NoteRepository
 from .profiles import ProfileRepository
@@ -452,12 +453,15 @@ def species_card(species: ScientificName, query: Annotated[TextQuery, Query()], 
 def new_species_card(species: ScientificName, query: Annotated[TextQuery, Query()], owner: UUID = Depends(authenticate),
                      cards: SpeciesCardRepository = Depends(species_cards), counter: UsageRepository = Depends(usage),
                      model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SpeciesCard:
+    require_model_species(species)
     return write_card(owner, species, query.locale, current, cards, counter, model)
 
 
 @router.get("/species/{species}/sounds", response_model=ReferenceSounds)
 def species_sounds(species: ScientificName, response: Response) -> ReferenceSounds:
-    # Public, like the cards: recordings of other people from xeno-canto, never anyone's records.
+    # Public, like the cards: recordings of other people from xeno-canto, never anyone's records. Only species of the
+    # models: any other name would miss the CDN's cache and spend the key on a question no screen asks.
+    require_model_species(species)
     sounds = reference_sounds(species)
     response.headers[CDN_CACHE_HEADER] = f"max-age={get_settings().sounds_cache_days * SECONDS_PER_DAY}, stale-while-revalidate={SECONDS_PER_DAY}"
     return sounds

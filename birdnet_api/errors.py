@@ -45,6 +45,7 @@ class ErrorCode(Enum):
     LLM_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Language model is not configured")
     LLM_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "Language model did not write the text; retry later")
     LLM_QUOTA_EXCEEDED = (HTTPStatus.TOO_MANY_REQUESTS, "Daily limit of new texts reached")
+    SPECIES_NOT_IN_MODELS = (HTTPStatus.NOT_FOUND, "Not a species the acoustic models can detect")
     SPECIES_UNKNOWN = (HTTPStatus.UNPROCESSABLE_ENTITY, "Not a bird species known to GBIF")
     PUBLIC_DATA_UNAVAILABLE = (HTTPStatus.BAD_GATEWAY, "Public sources did not answer; retry later")
     CARD_NOT_FOUND = (HTTPStatus.NOT_FOUND, "No card written for this species yet")

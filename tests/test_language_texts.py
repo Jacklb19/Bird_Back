@@ -12,7 +12,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from birdnet_api import species_cards
+from birdnet_api import model_species, species_cards
 from birdnet_api.app import app, now, site_reports, sites, usage, writer
 from birdnet_api.app import species_cards as card_repository
 from birdnet_api.contracts import SiteStats, SpeciesStat
@@ -232,7 +232,15 @@ def test_card_names_are_checked_before_anything_is_asked(texts):
         assert client.post(f"/v1/species/{name}/card", headers=headers()).status_code == 422
     assert client.post("/v1/species/Turdus fuscater/card", params={"locale": "fr"}, headers=headers()).status_code == 422
     assert asked == [] and model.calls == [] and counter.spent == {}
-    # A well-formed name GBIF does not know counts against the caller, so guessing names is not free.
+    # A well-formed name the models cannot detect is refused before the quota or any source.
+    assert client.post("/v1/species/Unknown bird/card", headers=headers()).status_code == 404
+    assert asked == [] and counter.spent == {}
+
+
+def test_a_model_species_gbif_does_not_know_counts_against_the_caller(texts, monkeypatch):
+    client, headers, _, model, counter, _, _ = texts
+    monkeypatch.setattr(model_species, "model_species", lambda: frozenset({"Unknown bird"}))
+    # Guessing names is not free.
     assert client.post("/v1/species/Unknown bird/card", headers=headers()).status_code == 422
     assert model.calls == [] and sum(counter.spent.values()) == 1
 
