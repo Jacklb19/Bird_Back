@@ -28,6 +28,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/species` | Especies propias con detecciones, mejor confianza, primera y última y sitios | Sí |
 | `GET /v1/me/species/{species}?tz=` | Ficha propia de una especie: horas, sitios, celdas de ~10 m y últimas detecciones (vacía si no hay) | Sí |
 | `GET /v1/sites`, `POST /v1/sites` | Sitios de monitoreo propios | Sí |
+| `PATCH /v1/sites/{id}`, `DELETE /v1/sites/{id}` | Renombrar (`{"name"}`; la ubicación no cambia) y borrar un sitio propio; sus cantos se quedan sin sitio y sus informes se borran. 404 al renombrar uno ajeno; borrar uno ajeno o inexistente no cambia nada (204) | Sí |
 | `GET /v1/sites/{id}/stats?period=&tz=` | Estadísticas deterministas de un sitio, solo con los cantos de su dueño | Sí |
 | `GET /v1/sites/{id}/report?period=&tz=&locale=` | Último informe redactado del sitio para ese periodo e idioma, con las cifras de las que salió; `stale` si cambiaron. 404 si no hay | Sí |
 | `POST /v1/sites/{id}/report` | Redacta el informe solo cuando la persona lo pide (`{"period", "tz", "locale", "names"}`; `names`: nombres comunes de las especies). Con las mismas cifras devuelve el guardado sin llamar al modelo. 422 si no hay cantos en el periodo, 429 si se acabó el tope del día, 503 si el modelo no respondió o su texto escribió una cifra que no está en las estadísticas | Sí |

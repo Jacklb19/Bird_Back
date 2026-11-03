@@ -45,6 +45,7 @@ from .contracts import (
     SharingUpdate,
     Site,
     SiteInput,
+    SiteRename,
     SiteList,
     SiteReport,
     SiteStats,
@@ -383,6 +384,19 @@ def list_sites(owner: UUID = Depends(authenticate), repo: SiteRepository = Depen
 @router.post("/sites", response_model=Site, status_code=HTTPStatus.CREATED)
 def create_site(payload: SiteInput, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Site:
     return repo.create_site(owner, payload)
+
+
+@router.patch("/sites/{site_id}", response_model=Site)
+def rename_site(site_id: UUID, payload: SiteRename, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Site:
+    renamed = repo.rename(owner, site_id, payload.name)
+    if renamed is None:
+        raise_error(ErrorCode.SITE_NOT_FOUND)
+    return renamed
+
+
+@router.delete("/sites/{site_id}", status_code=HTTPStatus.NO_CONTENT)
+def delete_site(site_id: UUID, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> None:
+    repo.delete(owner, site_id)
 
 
 @router.get("/sites/{site_id}/stats", response_model=SiteStats)

@@ -36,6 +36,19 @@ class SiteRepository(DetectionRepository):
             ).fetchone()
         return Site(id=row["id"], name=row["nombre"], latitude=row["latitude"], longitude=row["longitude"], created_at=row["created_at"])
 
+    def rename(self, owner: UUID, site_id: UUID, name: str) -> Site | None:
+        with self.transaction(owner) as connection:
+            row = connection.execute(
+                """UPDATE public.sites SET nombre = %s WHERE id = %s AND owner_id = %s
+                RETURNING id, nombre, ST_Y(centro::geometry) AS latitude, ST_X(centro::geometry) AS longitude, created_at""",
+                (name, site_id, owner)).fetchone()
+        return None if row is None else Site(id=row["id"], name=row["nombre"], latitude=row["latitude"], longitude=row["longitude"], created_at=row["created_at"])
+
+    def delete(self, owner: UUID, site_id: UUID) -> None:
+        """Deletes the site and its reports; its songs stay, without a site. Deleting what is gone is not an error."""
+        with self.transaction(owner) as connection:
+            connection.execute("DELETE FROM public.sites WHERE id = %s AND owner_id = %s", (site_id, owner))
+
     @staticmethod
     def _require_site(connection: psycopg.Connection[dict[str, Any]], site_id: UUID) -> None:
         # Sites are private: RLS hides foreign rows, so "not found" also covers "not yours".

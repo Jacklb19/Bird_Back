@@ -168,17 +168,24 @@ class SharingUpdate(StrictModel):
     updated: int
 
 
+def _visible_site_name(value: str) -> str:
+    value = " ".join(value.split())
+    if not value:
+        raise ValueError("Site name is required")
+    return value
+
+
+SiteName = Annotated[str, Field(min_length=1, max_length=MAX_SITE_NAME_LENGTH), AfterValidator(_visible_site_name)]
+
+
 class SiteInput(StrictModel):
-    name: str = Field(min_length=1, max_length=MAX_SITE_NAME_LENGTH)
+    name: SiteName
     location: Location
 
-    @field_validator("name")
-    @classmethod
-    def require_visible_name(cls, value: str) -> str:
-        value = " ".join(value.split())
-        if not value:
-            raise ValueError("Site name is required")
-        return value
+
+class SiteRename(StrictModel):
+    """A new name for a site; where it is cannot change, since its songs are already filed under it."""
+    name: SiteName
 
 
 class Site(StrictModel):

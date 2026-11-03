@@ -26,6 +26,17 @@ class MemorySites:
         self.owned[site.id] = (owner, site)
         return site
 
+    def rename(self, owner, site_id, name):
+        if self.owned.get(site_id, (None,))[0] != owner:
+            return None
+        site = self.owned[site_id][1].model_copy(update={"name": name})
+        self.owned[site_id] = (owner, site)
+        return site
+
+    def delete(self, owner, site_id):
+        if self.owned.get(site_id, (None,))[0] == owner:
+            del self.owned[site_id]
+
     def _check(self, owner, site_id):
         if self.owned.get(site_id, (None,))[0] != owner:
             raise HTTPException(404, "Site not found")
@@ -97,3 +108,20 @@ def test_export_scope_is_a_site_a_walk_or_everything(site_api):
     one_walk = client.get("/v1/export", params={"walk_id": walk}, headers=headers())
     assert one_walk.status_code == 200 and f"trino-walk-{walk}.csv" in one_walk.headers["content-disposition"]
     assert repo.exports[-2:] == [(None, None), (None, UUID(walk))]
+
+
+def test_a_site_is_renamed_and_deleted_only_by_its_owner(site_api):
+    client, repo, headers, owner = site_api
+    created = client.post("/v1/sites", json={"name": "Finca", "location": {"latitude": 4.711, "longitude": -74.072}}, headers=headers()).json()
+    path = f"/v1/sites/{created['id']}"
+    assert client.patch(path, json={"name": "  Finca   El Roble "}, headers=headers()).json()["name"] == "Finca El Roble"
+    assert client.patch(path, json={"name": "   "}, headers=headers()).status_code == 422
+    assert client.patch(path, json={"name": "x" * 81}, headers=headers()).status_code == 422
+    # Where it is cannot change: its songs are already filed under it.
+    assert client.patch(path, json={"name": "Otra", "location": {"latitude": 4.0, "longitude": -74.0}}, headers=headers()).status_code == 422
+    stranger = uuid4()
+    assert client.patch(path, json={"name": "Mía"}, headers=headers(stranger)).status_code == 404
+    assert client.delete(path, headers=headers(stranger)).status_code == 204 and repo.list_sites(owner)
+    assert client.delete(path).status_code == 401
+    assert client.delete(path, headers=headers()).status_code == 204 and repo.list_sites(owner) == []
+    assert client.delete(path, headers=headers()).status_code == 204

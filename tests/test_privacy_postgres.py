@@ -222,6 +222,7 @@ def test_own_located_songs_page_by_page_without_discarded_or_foreign(database): 
     assert [row.id for row in rest.detections] == [rows[0].id] and not rest.has_more
     assert (rest.detections[0].latitude, rest.detections[0].longitude) == (4.679, -74.123)
 
+
 def test_one_own_detection_with_review_note_and_recording_from_any_phone(database):  # noqa: F811
     from birdnet_api.domain import ReviewAction
     from birdnet_api.recordings import RecordingRepository
@@ -245,3 +246,19 @@ def test_one_own_detection_with_review_note_and_recording_from_any_phone(databas
     repo.review(owner, row.id, ReviewAction.DISCARD, None)
     assert records.detail(owner, row.id).status == "discarded"
     assert records.detail(other, row.id) is None
+
+
+def test_renaming_and_deleting_a_site_keeps_its_songs(database):  # noqa: F811
+    repo, owner, other = database
+    places = SiteRepository()
+    site = places.create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    row = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [row])
+    assert places.rename(other, site.id, "Mía") is None
+    assert places.rename(owner, site.id, "Finca El Roble").name == "Finca El Roble"
+    places.delete(other, site.id)
+    assert [s.id for s in places.list_sites(owner)] == [site.id]
+    places.delete(owner, site.id)
+    assert places.list_sites(owner) == []
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        assert connection.execute("SELECT site_id FROM public.detections WHERE id=%s", (row.id,)).fetchone() == (None,)
