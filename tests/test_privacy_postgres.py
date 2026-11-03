@@ -2,8 +2,10 @@
 import secrets
 import time
 from datetime import UTC, datetime
+from functools import partial
 from uuid import uuid4
 
+import httpx
 import jwt
 import psycopg
 import pytest
@@ -283,3 +285,33 @@ def test_every_free_text_column_of_the_csv_is_kept_from_running_as_a_formula(dat
     repo.review(owner, row.id, ReviewAction.CORRECT, "=HYPERLINK(\"x\")")
     body, _ = ExportRepository().export_csv(owner, None, None, None, None)
     assert "'=HYPERLINK" in body.splitlines()[1]
+
+
+def test_a_deleted_account_with_a_valid_token_cannot_sign_uploads(database, monkeypatch):  # noqa: F811
+    repo, owner, _ = database
+    secret, issuer = secrets.token_hex(32), "https://auth.invalid/auth/v1"
+    for name, value in {"DATABASE_URL": TEST_DATABASE_URL, "SUPABASE_AUTH_ISSUER": issuer, "SUPABASE_JWT_SECRET": secret,
+                        "SUPABASE_URL": "https://project.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "test-service-key"}.items():
+        monkeypatch.setenv(name, value)
+    signed = []
+
+    def serve(request):
+        signed.append(request.url.path)
+        return httpx.Response(200, json={"url": request.url.path.removeprefix("/storage/v1") + "?token=up"})
+
+    monkeypatch.setattr(httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(serve)))
+    claims = {"sub": str(owner), "iss": issuer, "aud": "authenticated", "role": "authenticated", "iat": int(time.time()), "exp": int(time.time()) + 600}
+    headers = {"Authorization": "Bearer " + jwt.encode(claims, secret, algorithm="HS256")}
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    photo, clip = {"content_type": "image/webp", "size_bytes": 1000}, {"content_type": "audio/webm", "size_bytes": 1000}
+    with TestClient(app) as client:
+        assert client.post("/v1/me/avatar-url", json=photo, headers=headers).status_code == 200
+        assert client.post(f"/v1/detections/{row.id}/recording-url", json=clip, headers=headers).status_code == 200
+        signed.clear()
+        # Deleting the Auth user cascades to the profile and everything below it; the token is still unexpired.
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            connection.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        assert client.post("/v1/me/avatar-url", json=photo, headers=headers).status_code == 404
+        assert client.post(f"/v1/detections/{row.id}/recording-url", json=clip, headers=headers).status_code == 404
+    assert signed == []

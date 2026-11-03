@@ -241,6 +241,7 @@ def save_note(detection_id: UUID, payload: NoteInput, owner: UUID = Depends(auth
 @router.post("/detections/{detection_id}/recording-url", response_model=RecordingUpload)
 def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository),
                      saved: RecordingRepository = Depends(recordings), storage: RecordingStorage = Depends(clips)) -> RecordingUpload:
+    # Also covers a deleted account whose token is still valid: its detections went with its profile.
     if repo.get_owned(owner, detection_id) is None:
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
     # Refused before the upload, so a full account does not spend the transfer; the link checks again. The reservation
@@ -316,7 +317,11 @@ def delete_account(_: AccountDeletionInput, owner: UUID = Depends(authenticate),
 
 
 @router.post("/me/avatar-url", response_model=AvatarUpload)
-def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
+def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), repo: ProfileRepository = Depends(profiles),
+               photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
+    # A deleted account's token stays valid until it expires; without this it could still put a photo in the bucket.
+    if not repo.exists(owner):
+        raise_error(ErrorCode.ACCOUNT_NOT_FOUND)
     # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
     return photos.sign(owner)
 

@@ -21,6 +21,7 @@ class ErrorCode(Enum):
     DATABASE_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Database is not configured")
     DATABASE_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "Database operation failed; retry later")
     STATUS_CONFIDENCE_MISMATCH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Confidence and verification state disagree")
+    ACCOUNT_NOT_FOUND = (HTTPStatus.NOT_FOUND, "Account not found")
     DETECTION_NOT_FOUND = (HTTPStatus.NOT_FOUND, "Detection not found")
     INVALID_MAP_BOUNDS = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid map bounds")
     INVALID_PERIOD = (HTTPStatus.UNPROCESSABLE_ENTITY, "Invalid period")

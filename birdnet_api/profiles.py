@@ -28,6 +28,11 @@ class ProfileRepository(DetectionRepository):
             row = connection.execute(f"SELECT {RETURNED_COLUMNS} FROM public.profiles WHERE id = %s", (owner,)).fetchone()
         return StoredProfile(**row) if row else EMPTY_PROFILE
 
+    def exists(self, owner: UUID) -> bool:
+        """False once the account was deleted: its row goes with the Auth user, while its token may still be valid."""
+        with self.transaction(owner) as connection:
+            return connection.execute("SELECT 1 FROM public.profiles WHERE id = %s", (owner,)).fetchone() is not None
+
     def update(self, owner: UUID, changes: dict[str, str | None]) -> StoredProfile:
         """Write only the given columns, creating the row when missing; keys are validated contract field names."""
         if not changes:
