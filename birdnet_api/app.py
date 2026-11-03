@@ -7,7 +7,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
@@ -63,7 +63,7 @@ from .contracts import (
     WalksDeleted,
     WalkUsage,
 )
-from .domain import MAX_SPECIES_LENGTH, SCIENTIFIC_NAME_PATTERN, StatsPeriod, local_status
+from .domain import MAX_SPECIES_LENGTH, SCIENTIFIC_NAME_PATTERN, StatsPeriod, local_status, recording_object_path
 from .errors import ErrorCode, error_response, raise_error
 from .exports import ExportRepository
 from .language_model import GeminiWriter, TextWriter
@@ -240,10 +240,15 @@ def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = 
                      saved: RecordingRepository = Depends(recordings), storage: RecordingStorage = Depends(clips)) -> RecordingUpload:
     if repo.get_owned(owner, detection_id) is None:
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
-    # Refused before the upload, so a full account does not spend the transfer; the link checks again.
-    if not saved.has_room(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
+    # Refused before the upload, so a full account does not spend the transfer; the link checks again. The reservation
+    # makes a clip that is uploaded but never linked count against the quota too.
+    if not saved.reserve(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
         raise_error(ErrorCode.RECORDING_QUOTA_EXCEEDED)
-    return storage.sign(owner, detection_id)
+    try:
+        return storage.sign(owner, detection_id)
+    except HTTPException:
+        saved.release(owner, detection_id)
+        raise
 
 
 @router.put("/detections/{detection_id}/recording", response_model=RecordingUsage)
@@ -269,10 +274,11 @@ def recording_url(detection_id: UUID, owner: UUID = Depends(authenticate), saved
 def delete_recording(detection_id: UUID, owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
                      storage: RecordingStorage = Depends(clips)) -> None:
     path = saved.path(owner, detection_id)
-    if path is None:
+    pending = recording_object_path(owner, detection_id)
+    if path is None and pending not in saved.pending_paths(owner):
         return
     # The object goes first: if Storage fails the link stays and the request can be repeated.
-    storage.delete([path])
+    storage.delete([path or pending])
     saved.unlink(owner, detection_id)
 
 
@@ -328,8 +334,11 @@ def recording_usage(owner: UUID = Depends(authenticate), saved: RecordingReposit
 def delete_recordings(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
                       storage: RecordingStorage = Depends(clips)) -> RecordingsDeleted:
     paths = saved.paths(owner)
-    storage.delete(paths)
-    return RecordingsDeleted(deleted=saved.unlink_all(owner, paths) if paths else 0)
+    pending = saved.pending_paths(owner)
+    if not paths and not pending:
+        return RecordingsDeleted(deleted=0)
+    storage.delete(paths + [path for path in pending if path not in paths])
+    return RecordingsDeleted(deleted=saved.unlink_all(owner, paths))
 
 
 @router.get("/me/summary", response_model=RecordSummary)
