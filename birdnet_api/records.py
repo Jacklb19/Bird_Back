@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from .contracts import OwnDetection, OwnDetectionPage, OwnSpecies, OwnSpeciesList, RecordSummary, SpeciesCell, SpeciesDetection, SpeciesRecord, SpeciesSite
+from .contracts import OwnDetection, OwnDetectionDetail, OwnDetectionPage, OwnSpecies, OwnSpeciesList, RecordSummary, SpeciesCell, SpeciesDetection, SpeciesRecord, SpeciesSite
 from .domain import (
     DB_TO_API_REVIEWER,
     DB_TO_API_STATUS,
@@ -55,6 +55,26 @@ class RecordRepository(DetectionRepository):
                          recorded_at=r["momento"], latitude=r["latitude"], longitude=r["longitude"])
             for r in rows[:limit]
         ], has_more=len(rows) > limit)
+
+    def detail(self, owner: UUID, detection: UUID) -> OwnDetectionDetail | None:
+        """One detection of the caller with its review, note and recording; None when it is not theirs."""
+        with self.transaction(owner) as connection:
+            row = connection.execute(
+                """SELECT d.id, d.especie, d.especie_modelo, d.confianza, d.estado, d.revisada_por, d.momento,
+                    ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude, d.site_id, s.nombre AS site_name,
+                    n.nota, n.individuos, d.ruta_grabacion IS NOT NULL AS has_recording
+                FROM public.detections d
+                LEFT JOIN public.sites s ON s.id = d.site_id
+                LEFT JOIN public.detection_notes n ON n.detection_id = d.id
+                WHERE d.id = %(id)s AND d.user_id = %(owner)s""",
+                {"id": detection, "owner": owner}).fetchone()
+        if row is None:
+            return None
+        return OwnDetectionDetail(
+            id=row["id"], species=row["especie"], model_species=row["especie_modelo"], confidence=row["confianza"],
+            status=DB_TO_API_STATUS[row["estado"]], reviewed_by=DB_TO_API_REVIEWER[row["revisada_por"]] if row["revisada_por"] else None,
+            recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"], site_id=row["site_id"], site_name=row["site_name"],
+            note=row["nota"], individuals=row["individuos"], has_recording=row["has_recording"])
 
     def species(self, owner: UUID) -> OwnSpeciesList:
         with self.transaction(owner) as connection:

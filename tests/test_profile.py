@@ -21,6 +21,9 @@ class MemoryProfiles:
     def get(self, owner):
         return self.rows.get(owner, EMPTY_PROFILE)
 
+    def exists(self, owner):
+        return True
+
     def update(self, owner, changes):
         current = self.rows.get(owner, EMPTY_PROFILE)
         self.rows[owner] = StoredProfile(**{"alias": current.alias, "avatar_path": current.avatar_path, "created_at": current.created_at, **changes})

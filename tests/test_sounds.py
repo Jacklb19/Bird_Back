@@ -73,10 +73,13 @@ def test_sounds_route_is_public_cached_and_says_when_it_cannot_answer(api, monke
     transport = httpx.MockTransport(answer)
     original = httpx.Client
     monkeypatch.setattr(sounds.httpx, "Client", lambda **kwargs: original(transport=transport, **kwargs))
+    # A well-formed name the models cannot detect is refused without asking xeno-canto.
+    assert client.get("/v1/species/Unknown bird/sounds").status_code == 404 and calls == []
     response = client.get(f"/v1/species/{SPECIES}/sounds")
     assert response.status_code == 200 and response.json()["sounds"][0]["id"] == "XC1"
     assert response.headers["Vercel-CDN-Cache-Control"].startswith("max-age=604800")
     assert calls[0].params["query"] == 'sp:"Turdus fuscater" grp:birds q:">C" len:"<60"' and calls[0].params["key"] == "secret-key"
+    assert len(calls) == 1
     # The key never goes back to the phone.
     assert "secret-key" not in response.text
     monkeypatch.setattr(sounds.httpx, "Client", lambda **kwargs: original(transport=httpx.MockTransport(lambda _: httpx.Response(500)), **kwargs))

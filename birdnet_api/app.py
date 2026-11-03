@@ -7,7 +7,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
@@ -23,6 +23,7 @@ from .contracts import (
     MapQuery,
     MapResponse,
     NoteInput,
+    OwnDetectionDetail,
     OwnDetectionPage,
     OwnDetectionQuery,
     OwnSpeciesList,
@@ -44,6 +45,7 @@ from .contracts import (
     SharingUpdate,
     Site,
     SiteInput,
+    SiteRename,
     SiteList,
     SiteReport,
     SiteStats,
@@ -63,12 +65,13 @@ from .contracts import (
     WalksDeleted,
     WalkUsage,
 )
-from .domain import MAX_SPECIES_LENGTH, SCIENTIFIC_NAME_PATTERN, StatsPeriod, local_status
+from .domain import MAX_SPECIES_LENGTH, SCIENTIFIC_NAME_PATTERN, StatsPeriod, local_status, recording_object_path
 from .errors import ErrorCode, error_response, raise_error
 from .exports import ExportRepository
 from .language_model import GeminiWriter, TextWriter
 from .llm_usage import UsageRepository
 from .manifest import load_manifest
+from .model_species import require_model_species
 from .monitoring import start_error_reports
 from .notes import NoteRepository
 from .profiles import ProfileRepository
@@ -116,7 +119,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 # Deployed as its own project: routes live at the root and the web app proxies /api/* here.
-app = FastAPI(title="Trino API", docs_url=None, redoc_url=None, lifespan=lifespan)
+# Without published docs or schema: the only client is the web app, and the routes are listed in the README.
+app = FastAPI(title="Trino API", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 router = APIRouter(prefix=API_PREFIX)
 
 
@@ -238,12 +242,18 @@ def save_note(detection_id: UUID, payload: NoteInput, owner: UUID = Depends(auth
 @router.post("/detections/{detection_id}/recording-url", response_model=RecordingUpload)
 def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = Depends(authenticate), repo: DetectionRepository = Depends(repository),
                      saved: RecordingRepository = Depends(recordings), storage: RecordingStorage = Depends(clips)) -> RecordingUpload:
+    # Also covers a deleted account whose token is still valid: its detections went with its profile.
     if repo.get_owned(owner, detection_id) is None:
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
-    # Refused before the upload, so a full account does not spend the transfer; the link checks again.
-    if not saved.has_room(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
+    # Refused before the upload, so a full account does not spend the transfer; the link checks again. The reservation
+    # makes a clip that is uploaded but never linked count against the quota too.
+    if not saved.reserve(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
         raise_error(ErrorCode.RECORDING_QUOTA_EXCEEDED)
-    return storage.sign(owner, detection_id)
+    try:
+        return storage.sign(owner, detection_id)
+    except HTTPException:
+        saved.release(owner, detection_id)
+        raise
 
 
 @router.put("/detections/{detection_id}/recording", response_model=RecordingUsage)
@@ -269,10 +279,11 @@ def recording_url(detection_id: UUID, owner: UUID = Depends(authenticate), saved
 def delete_recording(detection_id: UUID, owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
                      storage: RecordingStorage = Depends(clips)) -> None:
     path = saved.path(owner, detection_id)
-    if path is None:
+    pending = recording_object_path(owner, detection_id)
+    if path is None and pending not in saved.pending_paths(owner):
         return
     # The object goes first: if Storage fails the link stays and the request can be repeated.
-    storage.delete([path])
+    storage.delete([path or pending])
     saved.unlink(owner, detection_id)
 
 
@@ -307,7 +318,11 @@ def delete_account(_: AccountDeletionInput, owner: UUID = Depends(authenticate),
 
 
 @router.post("/me/avatar-url", response_model=AvatarUpload)
-def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
+def avatar_url(_: AvatarInput, owner: UUID = Depends(authenticate), repo: ProfileRepository = Depends(profiles),
+               photos: AvatarStorage = Depends(avatars)) -> AvatarUpload:
+    # A deleted account's token stays valid until it expires; without this it could still put a photo in the bucket.
+    if not repo.exists(owner):
+        raise_error(ErrorCode.ACCOUNT_NOT_FOUND)
     # The declaration is only validated here; the bucket enforces the same type and size on the upload itself.
     return photos.sign(owner)
 
@@ -328,8 +343,11 @@ def recording_usage(owner: UUID = Depends(authenticate), saved: RecordingReposit
 def delete_recordings(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings),
                       storage: RecordingStorage = Depends(clips)) -> RecordingsDeleted:
     paths = saved.paths(owner)
-    storage.delete(paths)
-    return RecordingsDeleted(deleted=saved.unlink_all(owner, paths) if paths else 0)
+    pending = saved.pending_paths(owner)
+    if not paths and not pending:
+        return RecordingsDeleted(deleted=0)
+    storage.delete(paths + [path for path in pending if path not in paths])
+    return RecordingsDeleted(deleted=saved.unlink_all(owner, paths))
 
 
 @router.get("/me/summary", response_model=RecordSummary)
@@ -341,6 +359,15 @@ def record_summary(query: Annotated[TimeZoneQuery, Query()], owner: UUID = Depen
 def own_detections(query: Annotated[OwnDetectionQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionPage:
     # "Mi mapa" draws from the phone; this adds the songs it no longer keeps (older ones, or from another phone).
     return repo.located(owner, query.before, query.limit)
+
+
+@router.get("/me/detections/{detection_id}", response_model=OwnDetectionDetail)
+def own_detection(detection_id: UUID, owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionDetail:
+    # A song this phone does not keep can still be reviewed and annotated here; the review and the note use their own routes.
+    found = repo.detail(owner, detection_id)
+    if found is None:
+        raise_error(ErrorCode.DETECTION_NOT_FOUND)
+    return found
 
 
 @router.get("/me/species", response_model=OwnSpeciesList)
@@ -363,6 +390,19 @@ def list_sites(owner: UUID = Depends(authenticate), repo: SiteRepository = Depen
 @router.post("/sites", response_model=Site, status_code=HTTPStatus.CREATED)
 def create_site(payload: SiteInput, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Site:
     return repo.create_site(owner, payload)
+
+
+@router.patch("/sites/{site_id}", response_model=Site)
+def rename_site(site_id: UUID, payload: SiteRename, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> Site:
+    renamed = repo.rename(owner, site_id, payload.name)
+    if renamed is None:
+        raise_error(ErrorCode.SITE_NOT_FOUND)
+    return renamed
+
+
+@router.delete("/sites/{site_id}", status_code=HTTPStatus.NO_CONTENT)
+def delete_site(site_id: UUID, owner: UUID = Depends(authenticate), repo: SiteRepository = Depends(sites)) -> None:
+    repo.delete(owner, site_id)
 
 
 @router.get("/sites/{site_id}/stats", response_model=SiteStats)
@@ -413,12 +453,15 @@ def species_card(species: ScientificName, query: Annotated[TextQuery, Query()], 
 def new_species_card(species: ScientificName, query: Annotated[TextQuery, Query()], owner: UUID = Depends(authenticate),
                      cards: SpeciesCardRepository = Depends(species_cards), counter: UsageRepository = Depends(usage),
                      model: TextWriter = Depends(writer), current: datetime = Depends(now)) -> SpeciesCard:
+    require_model_species(species)
     return write_card(owner, species, query.locale, current, cards, counter, model)
 
 
 @router.get("/species/{species}/sounds", response_model=ReferenceSounds)
 def species_sounds(species: ScientificName, response: Response) -> ReferenceSounds:
-    # Public, like the cards: recordings of other people from xeno-canto, never anyone's records.
+    # Public, like the cards: recordings of other people from xeno-canto, never anyone's records. Only species of the
+    # models: any other name would miss the CDN's cache and spend the key on a question no screen asks.
+    require_model_species(species)
     sounds = reference_sounds(species)
     response.headers[CDN_CACHE_HEADER] = f"max-age={get_settings().sounds_cache_days * SECONDS_PER_DAY}, stale-while-revalidate={SECONDS_PER_DAY}"
     return sounds

@@ -12,18 +12,22 @@ from fastapi import HTTPException
 
 from birdnet_api.app import app, clips, recordings
 from birdnet_api.contracts import ReviewedDetection
+from birdnet_api.domain import MAX_RECORDING_BYTES
 from birdnet_api.settings import get_settings
 from birdnet_api.storage import RecordingStorage
 from tests.test_api import api, detection  # noqa: F401  (fixture)
 
 WEBM = bytes.fromhex("1a45dfa3") + bytes(60)
 QUOTA = 1000
+# Room for exactly one clip that is uploaded but not linked, which counts as the largest clip the bucket accepts.
+ROOMY_QUOTA = MAX_RECORDING_BYTES
 
 
 class MemoryRecordings:
     def __init__(self, detections):
         self.detections = detections
         self.links = {}
+        self.pending = set()
 
     def _owns(self, owner, detection_id):
         row = self.detections.rows.get(str(detection_id))
@@ -36,21 +40,38 @@ class MemoryRecordings:
     def path(self, owner, detection_id):
         return self.links.get((owner, detection_id), (None, 0))[0]
 
-    def has_room(self, owner, detection_id, size, quota):
-        return sum(stored for (user, other), (_, stored) in self.links.items() if user == owner and other != detection_id) + size <= quota
+    def _taken(self, owner, detection_id):
+        linked = sum(stored for (user, other), (_, stored) in self.links.items() if user == owner and other != detection_id)
+        waiting = [key for key in self.pending if key[0] == owner and key[1] != detection_id and key not in self.links]
+        return linked + len(waiting) * MAX_RECORDING_BYTES
+
+    def reserve(self, owner, detection_id, size, quota):
+        if self._taken(owner, detection_id) + size > quota:
+            return False
+        self.pending.add((owner, detection_id))
+        return True
+
+    def release(self, owner, detection_id):
+        self.pending.discard((owner, detection_id))
 
     def link(self, owner, detection_id, path, size, quota):
-        if not self.has_room(owner, detection_id, size, quota):
+        if self._taken(owner, detection_id) + size > quota:
             raise HTTPException(507, "Quota")
         self.links[(owner, detection_id)] = (path, size)
+        self.pending.discard((owner, detection_id))
 
     def unlink(self, owner, detection_id):
         self.links.pop((owner, detection_id), None)
+        self.pending.discard((owner, detection_id))
 
     def paths(self, owner):
         return [path for (user, _), (path, _) in self.links.items() if user == owner]
 
+    def pending_paths(self, owner):
+        return [f"{user}/{detection_id}.webm" for user, detection_id in self.pending if user == owner]
+
     def unlink_all(self, owner, paths):
+        self.pending = {key for key in self.pending if key[0] != owner}
         mine = [key for key, (path, _) in self.links.items() if key[0] == owner and path in paths]
         for key in mine:
             del self.links[key]
@@ -176,6 +197,23 @@ def test_recordings_are_deleted_one_by_one_and_all_at_once(recording_api):
     assert client.get("/v1/me/recordings", headers=headers()).json() == {"recordings": 2, "bytes": 2 * len(WEBM), "limit_bytes": QUOTA}
     assert client.delete("/v1/me/recordings", headers=headers()).json() == {"deleted": 2}
     assert objects == {} and saved.links == {}
+
+
+def test_a_clip_uploaded_but_never_linked_still_counts_and_is_deleted(recording_api, monkeypatch):
+    client, saved, objects, headers, owner, synchronized = recording_api
+    monkeypatch.setenv("RECORDING_QUOTA_BYTES", str(ROOMY_QUOTA))
+    get_settings.cache_clear()
+    first, second = synchronized(), synchronized()
+    assert client.post(f"/v1/detections/{first}/recording-url", json=declaration(), headers=headers()).status_code == 200
+    objects[f"{owner}/{first}.webm"] = WEBM
+    # Never linked: without the reservation, unlimited unlinked uploads could fill the project's Storage.
+    assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(), headers=headers()).status_code == 507
+    assert client.delete(f"/v1/detections/{first}/recording", headers=headers()).status_code == 204
+    assert objects == {} and saved.pending == set()
+    assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(), headers=headers()).status_code == 200
+    objects[f"{owner}/{second}.webm"] = WEBM
+    assert client.delete("/v1/me/recordings", headers=headers()).json() == {"deleted": 0}
+    assert objects == {} and saved.pending == set()
 
 
 @pytest.mark.parametrize("body", [{"action": "correct"}, {"action": "confirm", "species": "Turdus fuscater"}, {"action": "discard", "species": "Turdus fuscater"},

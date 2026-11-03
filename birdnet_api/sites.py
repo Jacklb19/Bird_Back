@@ -36,6 +36,19 @@ class SiteRepository(DetectionRepository):
             ).fetchone()
         return Site(id=row["id"], name=row["nombre"], latitude=row["latitude"], longitude=row["longitude"], created_at=row["created_at"])
 
+    def rename(self, owner: UUID, site_id: UUID, name: str) -> Site | None:
+        with self.transaction(owner) as connection:
+            row = connection.execute(
+                """UPDATE public.sites SET nombre = %s WHERE id = %s AND owner_id = %s
+                RETURNING id, nombre, ST_Y(centro::geometry) AS latitude, ST_X(centro::geometry) AS longitude, created_at""",
+                (name, site_id, owner)).fetchone()
+        return None if row is None else Site(id=row["id"], name=row["nombre"], latitude=row["latitude"], longitude=row["longitude"], created_at=row["created_at"])
+
+    def delete(self, owner: UUID, site_id: UUID) -> None:
+        """Deletes the site and its reports; its songs stay, without a site. Deleting what is gone is not an error."""
+        with self.transaction(owner) as connection:
+            connection.execute("DELETE FROM public.sites WHERE id = %s AND owner_id = %s", (site_id, owner))
+
     @staticmethod
     def _require_site(connection: psycopg.Connection[dict[str, Any]], site_id: UUID) -> None:
         # Sites are private: RLS hides foreign rows, so "not found" also covers "not yours".
@@ -43,9 +56,12 @@ class SiteRepository(DetectionRepository):
             raise_error(ErrorCode.SITE_NOT_FOUND)
 
     def stats(self, owner: UUID, site_id: UUID, period: StatsPeriod, since: datetime | None, previous_since: datetime | None, until: datetime, tz: str) -> SiteStats:
-        # Discarded detections never count as presence.
-        window = "site_id = %(site)s AND estado <> %(discarded)s AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s) AND momento < %(until)s"
-        params = {"site": site_id, "since": since, "until": until, "tz": tz, "previous": previous_since, "discarded": DbDetectionStatus.DISCARDED.value}
+        # Discarded detections never count as presence. Only the owner's own songs count: a site is private, and the
+        # filter does not rely on every writer having respected it (ADR-44).
+        place = "site_id = %(site)s AND user_id = %(owner)s AND estado <> %(discarded)s"
+        window = f"{place} AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s) AND momento < %(until)s"
+        params = {"site": site_id, "owner": owner, "since": since, "until": until, "tz": tz, "previous": previous_since,
+                  "discarded": DbDetectionStatus.DISCARDED.value}
         with self.transaction(owner) as connection:
             self._require_site(connection, site_id)
             species = connection.execute(
@@ -57,13 +73,13 @@ class SiteRepository(DetectionRepository):
                 f"""SELECT extract(hour FROM momento AT TIME ZONE %(tz)s)::int AS h, count(*) AS n
                 FROM public.detections WHERE {window} GROUP BY h""", params).fetchall()
             history = connection.execute(
-                """SELECT especie, min(momento) AS first, max(momento) AS last
-                FROM public.detections WHERE site_id = %(site)s AND estado <> %(discarded)s GROUP BY especie""", params).fetchall()
+                f"""SELECT especie, min(momento) AS first, max(momento) AS last
+                FROM public.detections WHERE {place} GROUP BY especie""", params).fetchall()
             previous = None
             if since is not None and previous_since is not None:
                 previous = connection.execute(
-                    """SELECT count(DISTINCT especie) AS n FROM public.detections
-                    WHERE site_id = %(site)s AND estado <> %(discarded)s AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone()["n"]
+                    f"""SELECT count(DISTINCT especie) AS n FROM public.detections
+                    WHERE {place} AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone()["n"]
         first_seen = {r["especie"]: r["first"] for r in history}
         hourly = [0] * HOURS_PER_DAY
         for row in hours:

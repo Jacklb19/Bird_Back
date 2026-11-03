@@ -1,8 +1,11 @@
 """Second step of sign-in, private notes, threatened species on the map and walk paths, against PostgreSQL and RLS."""
 import secrets
 import time
+from datetime import UTC, datetime
+from functools import partial
 from uuid import uuid4
 
+import httpx
 import jwt
 import psycopg
 import pytest
@@ -10,10 +13,11 @@ from fastapi.testclient import TestClient
 
 from birdnet_api import repository as repository_module
 from birdnet_api.app import app
-from birdnet_api.contracts import DetectionInput, MapQuery, NoteInput, WalkInput
-from birdnet_api.domain import THREATENED_CELL_METERS
+from birdnet_api.contracts import DetectionInput, MapQuery, NoteInput, SiteInput, WalkInput
+from birdnet_api.domain import THREATENED_CELL_METERS, StatsPeriod
 from birdnet_api.exports import ExportRepository
 from birdnet_api.notes import NoteRepository
+from birdnet_api.sites import SiteRepository
 from birdnet_api.session import SECOND_FACTOR, session_assurance
 from birdnet_api.walks import WalkRepository
 from tests.prepare_database import TEST_DATABASE_URL
@@ -22,7 +26,7 @@ from tests.test_postgres import database  # noqa: F401  (fixture)
 from tests.test_postgres import pytestmark  # noqa: F401  (same isolated database only)
 
 # Tables that hold data of a person; the public ones (species cards, model versions) need no second step.
-PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes")
+PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes", "recording_uploads")
 
 
 def add_factor(person, status="verified"):
@@ -116,6 +120,54 @@ def test_notes_cannot_hang_from_someone_elses_detection(database):  # noqa: F811
         connection.execute("INSERT INTO public.detection_notes(detection_id,user_id,nota) VALUES (%s,%s,'x')", (row.id, other))
 
 
+def as_person(connection, person):
+    connection.execute("SET ROLE authenticated")
+    connection.execute("SELECT set_config('request.jwt.claims', %s, true)", (f'{{"sub":"{person}","role":"authenticated"}}',))
+
+
+def test_a_note_cannot_move_onto_someone_elses_detection(database):  # noqa: F811
+    repo, owner, other = database
+    mine, theirs = (DetectionInput.model_validate(detection()) for _ in range(2))
+    repo.batch(owner, [mine])
+    repo.batch(other, [theirs])
+    NoteRepository().save(other, theirs.id, NoteInput(note="mía"))
+    # A moved note would also take the primary key of the owner's detection, so the owner could no longer write theirs.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege), psycopg.connect(TEST_DATABASE_URL) as connection:
+        as_person(connection, other)
+        connection.execute("UPDATE public.detection_notes SET detection_id=%s WHERE detection_id=%s", (mine.id, theirs.id))
+    assert NoteRepository().save(owner, mine.id, NoteInput(note="la del dueño")) is not None
+
+
+def test_a_detection_cannot_name_someone_elses_site(database):  # noqa: F811
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    forged = DetectionInput.model_validate(detection())
+    # A plain foreign key ignores RLS: written straight to the database, this row would enter the owner's statistics.
+    with pytest.raises(psycopg.errors.ForeignKeyViolation), psycopg.connect(TEST_DATABASE_URL) as connection:
+        as_person(connection, other)
+        connection.execute(
+            """INSERT INTO public.detections (id,user_id,site_id,especie,confianza,estado,ubicacion,version_modelo)
+            VALUES (%s,%s,%s,'Turdus fuscater',0.9,'verificada',ST_GeogFromText('POINT(-74.123 4.679)'),'birdnet-v2.4:arm')""",
+            (forged.id, other, site.id))
+    own = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [own])
+    stats = SiteRepository().stats(owner, site.id, StatsPeriod.ALL, None, None, datetime.now(UTC), "UTC")
+    assert stats.detections == 1
+    # Deleting the site keeps the song and its author; only the site goes.
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("DELETE FROM public.sites WHERE id=%s", (site.id,))
+        assert connection.execute("SELECT site_id, user_id FROM public.detections WHERE id=%s", (own.id,)).fetchone() == (None, owner)
+
+
+@pytest.mark.parametrize("column", ["especie", "version_modelo"])
+def test_free_text_of_a_detection_is_bounded_in_the_database(database, column):  # noqa: F811
+    repo, owner, _ = database
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    with pytest.raises(psycopg.errors.CheckViolation), psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute(f"UPDATE public.detections SET {column}=%s WHERE id=%s", ("x" * 201, row.id))
+
+
 def test_threatened_species_reach_others_only_in_a_coarse_cell(database, monkeypatch):  # noqa: F811
     repo, owner, other = database
     monkeypatch.setattr(repository_module, "threatened_species", lambda: frozenset({"Vultur gryphus"}))
@@ -171,3 +223,95 @@ def test_own_located_songs_page_by_page_without_discarded_or_foreign(database): 
     rest = records.located(owner, first.detections[0].recorded_at, 10)
     assert [row.id for row in rest.detections] == [rows[0].id] and not rest.has_more
     assert (rest.detections[0].latitude, rest.detections[0].longitude) == (4.679, -74.123)
+
+
+def test_one_own_detection_with_review_note_and_recording_from_any_phone(database):  # noqa: F811
+    from birdnet_api.domain import ReviewAction
+    from birdnet_api.recordings import RecordingRepository
+    from birdnet_api.records import RecordRepository
+
+    repo, owner, other = database
+    site = SiteRepository().create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    row = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [row])
+    records = RecordRepository()
+    plain = records.detail(owner, row.id)
+    assert plain is not None and (plain.site_id, plain.site_name, plain.note, plain.has_recording, plain.reviewed_by) == (site.id, "Finca", None, False, None)
+    repo.review(owner, row.id, ReviewAction.CORRECT, "Zonotrichia capensis")
+    NoteRepository().save(owner, row.id, NoteInput(note="dos", individuals=2))
+    RecordingRepository().link(owner, row.id, f"{owner}/{row.id}.webm", 500, 1000)
+    reviewed = records.detail(owner, row.id)
+    assert reviewed is not None
+    assert (reviewed.species, reviewed.model_species, reviewed.status, reviewed.reviewed_by) == ("Zonotrichia capensis", "Turdus fuscater", "corrected", "person")
+    assert (reviewed.note, reviewed.individuals, reviewed.has_recording) == ("dos", 2, True)
+    # A discarded song is still the person's to see and change; another account never sees it, shared or not.
+    repo.review(owner, row.id, ReviewAction.DISCARD, None)
+    assert records.detail(owner, row.id).status == "discarded"
+    assert records.detail(other, row.id) is None
+
+
+def test_renaming_and_deleting_a_site_keeps_its_songs(database):  # noqa: F811
+    repo, owner, other = database
+    places = SiteRepository()
+    site = places.create_site(owner, SiteInput(name="Finca", location={"latitude": 4.679, "longitude": -74.123}))
+    row = DetectionInput.model_validate(detection(site_id=str(site.id)))
+    repo.batch(owner, [row])
+    assert places.rename(other, site.id, "Mía") is None
+    assert places.rename(owner, site.id, "Finca El Roble").name == "Finca El Roble"
+    places.delete(other, site.id)
+    assert [s.id for s in places.list_sites(owner)] == [site.id]
+    places.delete(owner, site.id)
+    assert places.list_sites(owner) == []
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        assert connection.execute("SELECT site_id FROM public.detections WHERE id=%s", (row.id,)).fetchone() == (None,)
+
+
+def test_others_see_only_the_hour_of_a_shared_song(database):  # noqa: F811
+    repo, owner, other = database
+    row = DetectionInput.model_validate(detection(recorded_at="2026-10-06T12:34:56Z"))
+    repo.batch(owner, [row])
+    area = {"west": -74.2, "south": 4.6, "east": -74.0, "north": 4.8}
+    seen = {viewer: next(d for d in repo.map(viewer, MapQuery(**area)).detections if d.id == row.id) for viewer in (owner, other)}
+    assert seen[owner].recorded_at.isoformat() == "2026-10-06T12:34:56+00:00"
+    assert seen[other].recorded_at.isoformat() == "2026-10-06T12:00:00+00:00"
+
+
+def test_every_free_text_column_of_the_csv_is_kept_from_running_as_a_formula(database):  # noqa: F811
+    from birdnet_api.domain import ReviewAction
+
+    repo, owner, _ = database
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    repo.review(owner, row.id, ReviewAction.CORRECT, "=HYPERLINK(\"x\")")
+    body, _ = ExportRepository().export_csv(owner, None, None, None, None)
+    assert "'=HYPERLINK" in body.splitlines()[1]
+
+
+def test_a_deleted_account_with_a_valid_token_cannot_sign_uploads(database, monkeypatch):  # noqa: F811
+    repo, owner, _ = database
+    secret, issuer = secrets.token_hex(32), "https://auth.invalid/auth/v1"
+    for name, value in {"DATABASE_URL": TEST_DATABASE_URL, "SUPABASE_AUTH_ISSUER": issuer, "SUPABASE_JWT_SECRET": secret,
+                        "SUPABASE_URL": "https://project.supabase.co", "SUPABASE_SERVICE_ROLE_KEY": "test-service-key"}.items():
+        monkeypatch.setenv(name, value)
+    signed = []
+
+    def serve(request):
+        signed.append(request.url.path)
+        return httpx.Response(200, json={"url": request.url.path.removeprefix("/storage/v1") + "?token=up"})
+
+    monkeypatch.setattr(httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(serve)))
+    claims = {"sub": str(owner), "iss": issuer, "aud": "authenticated", "role": "authenticated", "iat": int(time.time()), "exp": int(time.time()) + 600}
+    headers = {"Authorization": "Bearer " + jwt.encode(claims, secret, algorithm="HS256")}
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    photo, clip = {"content_type": "image/webp", "size_bytes": 1000}, {"content_type": "audio/webm", "size_bytes": 1000}
+    with TestClient(app) as client:
+        assert client.post("/v1/me/avatar-url", json=photo, headers=headers).status_code == 200
+        assert client.post(f"/v1/detections/{row.id}/recording-url", json=clip, headers=headers).status_code == 200
+        signed.clear()
+        # Deleting the Auth user cascades to the profile and everything below it; the token is still unexpired.
+        with psycopg.connect(TEST_DATABASE_URL) as connection:
+            connection.execute("DELETE FROM auth.users WHERE id = %s", (owner,))
+        assert client.post("/v1/me/avatar-url", json=photo, headers=headers).status_code == 404
+        assert client.post(f"/v1/detections/{row.id}/recording-url", json=clip, headers=headers).status_code == 404
+    assert signed == []
