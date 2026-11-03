@@ -234,7 +234,7 @@ def test_one_own_detection_with_review_note_and_recording_from_any_phone(databas
     repo.batch(owner, [row])
     records = RecordRepository()
     plain = records.detail(owner, row.id)
-    assert plain is not None and (plain.site_name, plain.note, plain.has_recording, plain.reviewed_by) == ("Finca", None, False, None)
+    assert plain is not None and (plain.site_id, plain.site_name, plain.note, plain.has_recording, plain.reviewed_by) == (site.id, "Finca", None, False, None)
     repo.review(owner, row.id, ReviewAction.CORRECT, "Zonotrichia capensis")
     NoteRepository().save(owner, row.id, NoteInput(note="dos", individuals=2))
     RecordingRepository().link(owner, row.id, f"{owner}/{row.id}.webm", 500, 1000)

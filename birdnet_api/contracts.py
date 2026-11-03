@@ -428,6 +428,7 @@ class OwnDetectionDetail(StrictModel):
     recorded_at: datetime
     latitude: float
     longitude: float
+    site_id: UUID | None
     site_name: str | None
     note: str | None
     individuals: int | None
