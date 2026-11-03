@@ -125,7 +125,7 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | Espera al conectar con la base (entero) | `10` |
 | `SUPABASE_AUTH_ISSUER` | Emisor de los tokens de sesión | — (503 al autenticar) |
 | `SUPABASE_JWT_SECRET` | Secreto de tokens HS256 heredados | — (solo JWKS) |
-| `JWKS_TIMEOUT_SECONDS` | Espera al descargar las claves públicas del emisor | `10` |
+| `JWKS_TIMEOUT_SECONDS` | Espera al descargar las claves públicas del emisor (se guardan 5 min; un token con un `kid` desconocido las vuelve a pedir como mucho una vez por minuto) | `10` |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Acceso a Storage con la clave de servicio (fotos de perfil y grabaciones guardadas) | — (503 al subir; perfil sin foto) |
 | `SUPABASE_AVATAR_BUCKET` | Bucket privado de las fotos de perfil (lo crea la migración `20261008000000`) | `avatars` |
 | `SUPABASE_RECORDING_BUCKET` | Bucket privado de las grabaciones guardadas (lo crea la migración `20261011000000`) | `recordings` |

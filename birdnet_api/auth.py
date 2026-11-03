@@ -18,6 +18,11 @@ from .settings import get_settings
 ASYMMETRIC_JWT_ALGORITHMS: Final = frozenset({"RS256", "ES256"})
 LEGACY_JWT_ALGORITHM: Final = "HS256"
 JWKS_PATH: Final = "/.well-known/jwks.json"
+# The key set is kept this long, and a token naming an unknown key forces a new download at most once per cooldown:
+# such tokens need no valid signature, so without the cooldown anyone could make the API call the issuer per request.
+# Supabase publishes a new key before signing with it, so the cooldown does not lock out rotated sessions.
+JWKS_CACHE_SECONDS: Final = 300.0
+JWKS_REFRESH_COOLDOWN_SECONDS: Final = 60.0
 REQUIRED_JWT_CLAIMS: Final = (SUBJECT_CLAIM, "exp", "iat", "iss", "aud")
 ASSURANCE_LEVELS: Final = frozenset({FIRST_FACTOR, SECOND_FACTOR})
 
@@ -34,7 +39,8 @@ def second_factors() -> SecondFactors:
 
 @lru_cache
 def signing_keys(issuer: str, timeout_seconds: float) -> jwt.PyJWKClient:
-    return jwt.PyJWKClient(f"{issuer}{JWKS_PATH}", timeout=timeout_seconds)
+    return jwt.PyJWKClient(f"{issuer}{JWKS_PATH}", lifespan=JWKS_CACHE_SECONDS, cooldown_duration=JWKS_REFRESH_COOLDOWN_SECONDS,
+                           timeout=timeout_seconds)
 
 
 async def authenticate(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), factors: SecondFactors = Depends(second_factors)) -> UUID:
