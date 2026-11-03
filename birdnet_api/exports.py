@@ -52,15 +52,15 @@ class ExportRepository(DetectionRepository):
         for r in rows[:limit]:
             writer.writerow({
                 ExportColumn.ID: r["id"],
-                ExportColumn.SPECIES: r["especie"],
+                ExportColumn.SPECIES: spreadsheet_text(r["especie"]),
                 ExportColumn.CONFIDENCE: f"{r['confianza']:.{CONFIDENCE_EXPORT_DECIMALS}f}",
                 ExportColumn.STATUS: DB_TO_API_STATUS[r["estado"]],
                 ExportColumn.RECORDED_AT: r["momento"].isoformat(),
                 ExportColumn.LATITUDE: f"{r['latitude']:.{LOCATION_GRID_DECIMALS}f}",
                 ExportColumn.LONGITUDE: f"{r['longitude']:.{LOCATION_GRID_DECIMALS}f}",
-                ExportColumn.MODEL_VERSION: r["version_modelo"],
+                ExportColumn.MODEL_VERSION: spreadsheet_text(r["version_modelo"]),
                 ExportColumn.SITE: spreadsheet_text(r["nombre"] or ""),
-                ExportColumn.MODEL_SPECIES: r["especie_modelo"] or "",
+                ExportColumn.MODEL_SPECIES: spreadsheet_text(r["especie_modelo"] or ""),
                 ExportColumn.REVIEWED_BY: DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else "",
                 ExportColumn.INDIVIDUALS: r["individuos"] if r["individuos"] is not None else "",
                 ExportColumn.NOTE: spreadsheet_text(r["nota"] or ""),

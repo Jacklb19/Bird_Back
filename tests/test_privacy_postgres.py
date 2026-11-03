@@ -272,3 +272,14 @@ def test_others_see_only_the_hour_of_a_shared_song(database):  # noqa: F811
     seen = {viewer: next(d for d in repo.map(viewer, MapQuery(**area)).detections if d.id == row.id) for viewer in (owner, other)}
     assert seen[owner].recorded_at.isoformat() == "2026-10-06T12:34:56+00:00"
     assert seen[other].recorded_at.isoformat() == "2026-10-06T12:00:00+00:00"
+
+
+def test_every_free_text_column_of_the_csv_is_kept_from_running_as_a_formula(database):  # noqa: F811
+    from birdnet_api.domain import ReviewAction
+
+    repo, owner, _ = database
+    row = DetectionInput.model_validate(detection())
+    repo.batch(owner, [row])
+    repo.review(owner, row.id, ReviewAction.CORRECT, "=HYPERLINK(\"x\")")
+    body, _ = ExportRepository().export_csv(owner, None, None, None, None)
+    assert "'=HYPERLINK" in body.splitlines()[1]
