@@ -3,6 +3,7 @@
 That removing the user cascades through every table is checked against PostgreSQL in test_postgres.py.
 """
 import json
+import time
 from functools import partial
 
 import httpx
@@ -14,6 +15,11 @@ from birdnet_api.settings import get_settings
 from tests.test_api import api  # noqa: F401  (fixture)
 
 CONFIRMED = {"confirmation": "DELETE"}
+
+
+def signed_in(seconds_ago=0):
+    """Claim of a session whose password was given `seconds_ago`; deletion asks for a recent one."""
+    return {"amr": [{"method": "password", "timestamp": int(time.time()) - seconds_ago}]}
 
 
 @pytest.fixture
@@ -62,31 +68,43 @@ def deletion(api, monkeypatch):  # noqa: F811
 
 def test_account_deletion_removes_storage_first_then_the_user(deletion):
     client, headers, owner, state = deletion
-    response = client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers())
+    response = client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**signed_in()))
     assert response.status_code == 204
     assert state["objects"] == {"avatars": set(), "recordings": set()} and state["users"] == set()
     # At most a thousand objects per removal, every removal before the user.
     assert state["log"] == [("remove", "avatars", 1), ("remove", "recordings", 1000), ("remove", "recordings", 500), ("user", str(owner))]
     # Repeating after a lost answer succeeds: nothing is left to list and the user is already gone.
-    assert client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers()).status_code == 204
+    assert client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**signed_in())).status_code == 204
 
 
 def test_account_deletion_needs_the_confirmation_and_a_session(deletion):
     client, headers, _, state = deletion
-    assert client.request("DELETE", "/v1/me", headers=headers()).status_code == 422
-    assert client.request("DELETE", "/v1/me", json={"confirmation": "delete"}, headers=headers()).status_code == 422
+    assert client.request("DELETE", "/v1/me", headers=headers(**signed_in())).status_code == 422
+    assert client.request("DELETE", "/v1/me", json={"confirmation": "delete"}, headers=headers(**signed_in())).status_code == 422
     assert client.request("DELETE", "/v1/me", json=CONFIRMED).status_code == 401
     assert state["log"] == []
+
+
+def test_account_deletion_needs_a_recent_sign_in(deletion):
+    client, headers, owner, state = deletion
+    # A session open for long (a borrowed phone, a stolen token) or naming no sign-in deletes nothing.
+    for claims in (signed_in(seconds_ago=11 * 60), {}, {"amr": "password"}, {"amr": [{"method": "password", "timestamp": "now"}]}):
+        response = client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**claims))
+        assert response.status_code == 403
+    assert state["log"] == [] and str(owner) in state["users"]
+    # The latest method counts: an old password followed by a fresh authenticator code is recent.
+    second = {"amr": [{"method": "password", "timestamp": int(time.time()) - 3600}, {"method": "totp", "timestamp": int(time.time()) - 30}]}
+    assert client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**second)).status_code == 204
 
 
 @pytest.mark.parametrize("failing", ["/object/list/recordings", "/admin/users/"])
 def test_a_failed_step_reports_the_account_as_not_deleted(deletion, failing):
     client, headers, owner, state = deletion
     state["fail"] = failing
-    response = client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers())
+    response = client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**signed_in()))
     assert response.status_code == 502
     # The user stays in both cases, so the account can be deleted again; nothing in the database was touched.
     assert str(owner) in state["users"]
     state["fail"] = None
-    assert client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers()).status_code == 204
+    assert client.request("DELETE", "/v1/me", json=CONFIRMED, headers=headers(**signed_in())).status_code == 204
     assert state["users"] == set()

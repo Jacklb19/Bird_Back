@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Req
 from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
-from .auth import authenticate
+from .auth import authenticate, authenticate_recently
 from .contracts import (
     AccountDeletion as AccountDeletionInput,
     AvatarInput,
@@ -311,7 +311,7 @@ def update_profile(payload: ProfileInput, owner: UUID = Depends(authenticate), r
 
 
 @router.delete("/me", status_code=HTTPStatus.NO_CONTENT)
-def delete_account(_: AccountDeletionInput, owner: UUID = Depends(authenticate), deletion: AccountDeletion = Depends(accounts)) -> None:
+def delete_account(_: AccountDeletionInput, owner: UUID = Depends(authenticate_recently), deletion: AccountDeletion = Depends(accounts)) -> None:
     # Everything in the account goes: Storage objects first, then the user, whose removal cascades in the database.
     # The phone deletes what it keeps of the account only after this answers.
     deletion.delete(owner)
