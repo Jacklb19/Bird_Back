@@ -40,10 +40,11 @@ async def lose_response(request: Request, call_next):
 
 
 @app.get("/test/session")
-def session():
+def session(signed_in_ago: int = 0):
+    # `signed_in_ago` gives a session whose password was typed that many seconds ago (deletion asks for a recent one).
     expiry = int(time.time()) + 3600
     claims = {"sub": str(owner), "iss": os.environ["SUPABASE_AUTH_ISSUER"], "aud": "authenticated", "role": "authenticated", "iat": int(time.time()), "exp": expiry,
-              "amr": [{"method": "password", "timestamp": int(time.time())}]}
+              "amr": [{"method": "password", "timestamp": int(time.time()) - signed_in_ago}]}
     return {"userId": str(owner), "accessToken": jwt.encode(claims, os.environ["SUPABASE_JWT_SECRET"], algorithm="HS256"), "expiresAt": expiry}
 
 
