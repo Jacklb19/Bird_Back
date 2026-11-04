@@ -18,6 +18,7 @@ class ErrorCode(Enum):
     AUTH_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Authentication is not configured")
     SESSION_INVALID = (HTTPStatus.UNAUTHORIZED, "Invalid or expired session")
     SECOND_FACTOR_REQUIRED = (HTTPStatus.FORBIDDEN, "This account asks for the code of its authenticator app")
+    RECENT_SIGN_IN_REQUIRED = (HTTPStatus.FORBIDDEN, "Sign in again to do this")
     DATABASE_NOT_CONFIGURED = (HTTPStatus.SERVICE_UNAVAILABLE, "Database is not configured")
     DATABASE_UNAVAILABLE = (HTTPStatus.SERVICE_UNAVAILABLE, "Database operation failed; retry later")
     STATUS_CONFIDENCE_MISMATCH = (HTTPStatus.UNPROCESSABLE_ENTITY, "Confidence and verification state disagree")

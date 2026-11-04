@@ -1,6 +1,7 @@
 """Accept only Supabase access tokens with verified signatures and required claims, and the second step when it is on."""
+import time
 from functools import lru_cache
-from typing import Final, Protocol
+from typing import Any, Final, NamedTuple, Protocol
 from uuid import UUID
 
 import jwt
@@ -10,7 +11,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .errors import ErrorCode, raise_error
 from .repository import DetectionRepository
-from .session import ASSURANCE_CLAIM, AUTHENTICATED_ROLE, FIRST_FACTOR, ROLE_CLAIM, SECOND_FACTOR, SUBJECT_CLAIM, session_assurance
+from .session import (
+    ASSURANCE_CLAIM, AUTHENTICATED_ROLE, FIRST_FACTOR, METHODS_CLAIM, ROLE_CLAIM, SECOND_FACTOR, SUBJECT_CLAIM, session_assurance,
+    session_signed_in_at,
+)
 from .settings import get_settings
 
 # Supabase signs sessions with asymmetric keys published as JWKS; HS256 with the shared secret is only for
@@ -25,12 +29,30 @@ JWKS_CACHE_SECONDS: Final = 300.0
 JWKS_REFRESH_COOLDOWN_SECONDS: Final = 60.0
 REQUIRED_JWT_CLAIMS: Final = (SUBJECT_CLAIM, "exp", "iat", "iss", "aud")
 ASSURANCE_LEVELS: Final = frozenset({FIRST_FACTOR, SECOND_FACTOR})
+# Deleting the account cannot be undone, so it asks for a sign-in this recent (owner's decision, 2026-11-04): a session
+# left open on a borrowed phone, or a stolen token, is not enough. The web asks again a little before, for clock skew.
+RECENT_SIGN_IN_SECONDS: Final = 600
 
 bearer = HTTPBearer(auto_error=False)
 
 
 class SecondFactors(Protocol):
     def has_second_factor(self, person: UUID) -> bool: ...
+
+
+class VerifiedClaims(NamedTuple):
+    person: UUID
+    level: str
+    signed_in_at: int | None
+
+
+def latest_sign_in(methods: Any) -> int | None:
+    """Time of the latest authentication the token names; anything malformed counts as none."""
+    if not isinstance(methods, list):
+        return None
+    times = [entry.get("timestamp") for entry in methods if isinstance(entry, dict)]
+    valid = [moment for moment in times if isinstance(moment, int) and not isinstance(moment, bool)]
+    return max(valid, default=None)
 
 
 def second_factors() -> SecondFactors:
@@ -46,21 +68,30 @@ def signing_keys(issuer: str, timeout_seconds: float) -> jwt.PyJWKClient:
 async def authenticate(credentials: HTTPAuthorizationCredentials | None = Depends(bearer), factors: SecondFactors = Depends(second_factors)) -> UUID:
     # Async so that the level it records stays in this request's context for the endpoint; the blocking work
     # (signing keys, database) runs in the thread pool.
-    person, level = await run_in_threadpool(verified_session, credentials, factors)
-    session_assurance.set(level)
+    claims = await run_in_threadpool(verified_session, credentials, factors)
+    session_assurance.set(claims.level)
+    session_signed_in_at.set(claims.signed_in_at)
+    return claims.person
+
+
+async def authenticate_recently(person: UUID = Depends(authenticate)) -> UUID:
+    signed_in_at = session_signed_in_at.get()
+    if signed_in_at is None or time.time() - signed_in_at > RECENT_SIGN_IN_SECONDS:
+        raise_error(ErrorCode.RECENT_SIGN_IN_REQUIRED)
     return person
 
 
-def verified_session(credentials: HTTPAuthorizationCredentials | None, factors: SecondFactors) -> tuple[UUID, str]:
-    person, level = verified_claims(credentials)
+def verified_session(credentials: HTTPAuthorizationCredentials | None, factors: SecondFactors) -> VerifiedClaims:
+    claims = verified_claims(credentials)
+    person, level = claims.person, claims.level
     # A session that gave the code needs no lookup; one that did not is refused if the account asks for the code,
     # so a stolen password alone reaches nothing, not even the deletion of the account.
     if level != SECOND_FACTOR and factors.has_second_factor(person):
         raise_error(ErrorCode.SECOND_FACTOR_REQUIRED)
-    return person, level
+    return claims
 
 
-def verified_claims(credentials: HTTPAuthorizationCredentials | None) -> tuple[UUID, str]:
+def verified_claims(credentials: HTTPAuthorizationCredentials | None) -> VerifiedClaims:
     if credentials is None:
         raise_error(ErrorCode.AUTH_REQUIRED)
     settings = get_settings()
@@ -83,6 +114,6 @@ def verified_claims(credentials: HTTPAuthorizationCredentials | None) -> tuple[U
         level = claims.get(ASSURANCE_CLAIM, FIRST_FACTOR)
         if level not in ASSURANCE_LEVELS:
             raise jwt.InvalidTokenError()
-        return UUID(claims[SUBJECT_CLAIM]), level
+        return VerifiedClaims(UUID(claims[SUBJECT_CLAIM]), level, latest_sign_in(claims.get(METHODS_CLAIM)))
     except (jwt.PyJWTError, ValueError, KeyError, TypeError):
         raise_error(ErrorCode.SESSION_INVALID)
