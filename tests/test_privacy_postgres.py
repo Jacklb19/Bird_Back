@@ -212,14 +212,19 @@ def test_own_located_songs_page_by_page_without_discarded_or_foreign(database): 
     from birdnet_api.records import RecordRepository
 
     repo, owner, other = database
-    rows = [DetectionInput.model_validate(detection(recorded_at=f"2026-10-0{day}T12:00:00Z")) for day in (1, 2, 3)]
+    rows = [DetectionInput.model_validate(detection(recorded_at=f"2026-10-0{day}T12:00:00Z")) for day in (1, 2, 3, 3)]
     repo.batch(owner, rows)
     repo.batch(other, [DetectionInput.model_validate(detection())])
     with repo.transaction(owner) as connection:
         connection.execute("UPDATE public.detections SET estado='descartada' WHERE id=%s", (rows[1].id,))
     records = RecordRepository()
     first = records.located(owner, None, 1)
-    assert [row.id for row in first.detections] == [rows[2].id] and first.has_more
+    tied = sorted([rows[2].id, rows[3].id])
+    assert [row.id for row in first.detections] == tied[:1] and first.has_more
+    cursor = first.detections[0]
+    following = records.located(owner, cursor.recorded_at, 10, cursor.id)
+    assert [row.id for row in following.detections] == [tied[1], rows[0].id] and not following.has_more
+    # The timestamp-only contract of older clients still skips the entire timestamp.
     rest = records.located(owner, first.detections[0].recorded_at, 10)
     assert [row.id for row in rest.detections] == [rows[0].id] and not rest.has_more
     assert (rest.detections[0].latitude, rest.detections[0].longitude) == (4.679, -74.123)

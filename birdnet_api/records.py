@@ -39,17 +39,18 @@ class RecordRepository(DetectionRepository):
         return RecordSummary(detections=totals["detections"], species=totals["species"], sites=sites["n"],
                              first_recorded_at=totals["first"], last_recorded_at=totals["last"], active_days=totals["days"])
 
-    def located(self, owner: UUID, before: datetime | None, limit: int) -> OwnDetectionPage:
+    def located(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> OwnDetectionPage:
         """The caller's songs with a place, newest first; discarded ones are not presence and stay out."""
         with self.transaction(owner) as connection:
             rows = connection.execute(
                 f"""SELECT d.id, d.especie, d.confianza, d.estado, d.momento,
                     ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude
                 FROM public.detections d WHERE {OWN_RECORD} AND d.ubicacion IS NOT NULL
-                  AND (%(before)s::timestamptz IS NULL OR d.momento < %(before)s)
+                  AND (%(before)s::timestamptz IS NULL OR d.momento < %(before)s
+                       OR (d.momento = %(before)s AND d.id > %(after_id)s::uuid))
                 ORDER BY d.momento DESC, d.id LIMIT %(fetch)s""",
                 # One extra row tells whether another page follows.
-                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+                self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
         return OwnDetectionPage(detections=[
             OwnDetection(id=r["id"], species=r["especie"], confidence=r["confianza"], status=DB_TO_API_STATUS[r["estado"]],
                          recorded_at=r["momento"], latitude=r["latitude"], longitude=r["longitude"])
