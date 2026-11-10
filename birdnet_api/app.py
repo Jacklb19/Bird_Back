@@ -358,7 +358,7 @@ def record_summary(query: Annotated[TimeZoneQuery, Query()], owner: UUID = Depen
 @router.get("/me/detections", response_model=OwnDetectionPage)
 def own_detections(query: Annotated[OwnDetectionQuery, Query()], owner: UUID = Depends(authenticate), repo: RecordRepository = Depends(records)) -> OwnDetectionPage:
     # "Mi mapa" draws from the phone; this adds the songs it no longer keeps (older ones, or from another phone).
-    return repo.located(owner, query.before, query.limit)
+    return repo.located(owner, query.before, query.limit, query.after_id)
 
 
 @router.get("/me/detections/{detection_id}", response_model=OwnDetectionDetail)

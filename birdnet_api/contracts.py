@@ -393,9 +393,16 @@ class OwnSpeciesList(StrictModel):
 
 
 class OwnDetectionQuery(StrictModel):
-    """Newest first; `before` is the time of the last song already received."""
+    """Continue after the last (time, id) pair; older clients send only the time."""
     before: AwareTimestamp | None = None
+    after_id: UUID | None = None
     limit: int = Field(default=DEFAULT_OWN_DETECTION_PAGE, ge=1, le=MAX_OWN_DETECTION_PAGE)
+
+    @model_validator(mode="after")
+    def require_cursor_time(self) -> "OwnDetectionQuery":
+        if self.after_id is not None and self.before is None:
+            raise ValueError("after_id requires before")
+        return self
 
 
 class OwnDetection(StrictModel):
