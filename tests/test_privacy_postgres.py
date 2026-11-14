@@ -190,6 +190,20 @@ def test_threatened_species_reach_others_only_in_a_coarse_cell(database, monkeyp
     assert [row.id for row in repo.map(other, centre).detections if row.id in (condor.id, thrush.id)] == [condor.id]
 
 
+def test_map_filters_cannot_recover_the_precise_time_of_a_foreign_song(database):  # noqa: F811
+    repo, owner, other = database
+    row = DetectionInput.model_validate(detection(recorded_at="2026-10-06T12:34:56Z"))
+    repo.batch(owner, [row])
+    area = {"west": -74.2, "south": 4.6, "east": -74.0, "north": 4.8}
+    for second in ("55", "57"):
+        query = MapQuery(**area, since=f"2026-10-06T12:34:{second}Z")
+        assert row.id not in {found.id for found in repo.map(other, query).detections}
+    precise = MapQuery(**area, since="2026-10-06T12:34:55Z", until="2026-10-06T12:34:57Z")
+    assert row.id in {found.id for found in repo.map(owner, precise).detections}
+    hour = MapQuery(**area, since="2026-10-06T12:00:00Z", until="2026-10-06T13:00:00Z")
+    assert row.id in {found.id for found in repo.map(other, hour).detections}
+
+
 def test_walk_paths_carry_track_and_places_page_by_page(database):  # noqa: F811
     repo, owner, other = database
     walks = WalkRepository()

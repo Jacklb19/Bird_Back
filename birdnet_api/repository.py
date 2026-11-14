@@ -173,10 +173,11 @@ class DetectionRepository:
                       -- Wide enough to hold any detection whose coarse cell centre may fall inside the area.
                       AND ST_Intersects(d.ubicacion::geometry, ST_Expand(ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer), %(cell)s))
                       AND (%(species)s::text IS NULL OR d.especie = %(species)s)
-                      AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)
-                      AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
                 ) placed
                 WHERE ST_Intersects(shown, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
+                  -- Filtering must use the same precision as the published time, or narrow ranges reveal the original.
+                  AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR momento < %(until)s)
                 ORDER BY momento DESC LIMIT %(fetch)s""",
                 {"viewer": viewer, "discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
                  "north": query.north, "srid": WGS84_SRID, "species": query.species, "since": query.since, "until": query.until,

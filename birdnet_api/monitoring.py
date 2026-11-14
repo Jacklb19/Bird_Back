@@ -7,7 +7,8 @@ hour on the free plan, too little to find an error after the fact.
 import logging
 import os
 import re
-from typing import Any, Final
+from typing import Final, cast
+from urllib.parse import urlsplit, urlunsplit
 
 import sentry_sdk
 from sentry_sdk.types import Event, Hint
@@ -17,8 +18,8 @@ from .settings import Settings, SettingsError
 # Detections, walks and sites are named by UUID in paths; a path keeps its shape without them.
 IDENTIFIER: Final = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 IDENTIFIER_PLACEHOLDER: Final = "{id}"
-# Request fields Sentry's integrations may add; only the method and the cleaned URL stay.
-REQUEST_FIELDS_KEPT: Final = frozenset({"method", "url"})
+EVENT_FIELDS_KEPT: Final = frozenset({"event_id", "timestamp", "platform", "level", "release", "environment", "sdk"})
+FRAME_FIELDS_KEPT: Final = frozenset({"filename", "module", "function", "lineno", "colno", "in_app"})
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +43,27 @@ def start_error_reports() -> None:
 
 
 def without_personal_data(event: Event, _: Hint) -> Event | None:
-    request: dict[str, Any] = event.get("request") or {}
+    # Unknown metadata, log parameters and exception messages can contain notes, tokens or upstream response bodies.
+    # Keep the exception's type and code location, never its runtime values or arbitrary context fields.
+    cleaned: dict[str, object] = {key: value for key, value in event.items() if key in EVENT_FIELDS_KEPT}
+    request = event.get("request") or {}
     if request:
-        cleaned = {key: value for key, value in request.items() if key in REQUEST_FIELDS_KEPT}
-        if isinstance(cleaned.get("url"), str):
-            cleaned["url"] = IDENTIFIER.sub(IDENTIFIER_PLACEHOLDER, cleaned["url"].split("?", 1)[0])
-        event["request"] = cleaned
-    event.pop("user", None)
-    event.pop("server_name", None)
-    event.pop("breadcrumbs", None)
-    return event
+        safe_request: dict[str, object] = {}
+        if request.get("method"):
+            safe_request["method"] = request["method"]
+        url = request.get("url")
+        if isinstance(url, str):
+            try:
+                parsed = urlsplit(url)
+                safe_request["url"] = urlunsplit((parsed.scheme, parsed.hostname or "", IDENTIFIER.sub(IDENTIFIER_PLACEHOLDER, parsed.path), "", ""))
+            except ValueError:
+                pass
+        cleaned["request"] = safe_request
+    exceptions = []
+    for error in (event.get("exception") or {}).get("values", []):
+        frames = [{key: value for key, value in frame.items() if key in FRAME_FIELDS_KEPT}
+                  for frame in (error.get("stacktrace") or {}).get("frames", [])]
+        exceptions.append({"type": error.get("type", "Error"), "value": "[redacted]", "stacktrace": {"frames": frames}})
+    if exceptions or "exception" in event:
+        cleaned["exception"] = {"values": exceptions}
+    return cast(Event, cleaned)
