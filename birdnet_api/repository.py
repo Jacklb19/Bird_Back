@@ -20,6 +20,7 @@ from .domain import (
     DbDetectionStatus,
     DbReviewer,
     ReviewAction,
+    visible_status,
 )
 from .errors import ErrorCode, raise_error
 from .session import ASSURANCE_CLAIM, AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM, session_assurance
@@ -28,6 +29,13 @@ from .threatened import threatened_species
 
 # Transaction-local setting that Supabase's auth.uid() reads, so RLS policies see the requesting user.
 JWT_CLAIMS_SETTING: Final = "request.jwt.claims"
+
+
+def require_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    """An aggregate or a successful INSERT RETURNING must produce its promised row."""
+    if row is None:
+        raise_error(ErrorCode.DATABASE_UNAVAILABLE)
+    return row
 
 
 class DetectionRepository:
@@ -177,7 +185,7 @@ class DetectionRepository:
                  "fetch": limit + 1},
             ).fetchall()
         detections = [
-            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=DB_TO_API_STATUS[row["estado"]],
+            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=visible_status(row["estado"]),
                          recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"], own=row["own"],
                          site_name=row["site_name"], generalized_m=THREATENED_CELL_METERS if row["generalized"] else None)
             for row in rows[:limit]

@@ -10,7 +10,7 @@ import psycopg
 
 from .domain import MAX_RECORDING_BYTES, recording_object_path
 from .errors import ErrorCode, raise_error
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 
 class RecordingRepository(DetectionRepository):
@@ -20,7 +20,8 @@ class RecordingRepository(DetectionRepository):
             row = connection.execute(
                 "SELECT count(*) AS n, coalesce(sum(bytes_grabacion), 0) AS bytes FROM public.detections WHERE user_id = %s AND ruta_grabacion IS NOT NULL",
                 (owner,)).fetchone()
-        return row["n"], row["bytes"]
+        found = require_row(row)
+        return found["n"], found["bytes"]
 
     def path(self, owner: UUID, detection: UUID) -> str | None:
         """Object path of the detection's recording; None when the detection is not the caller's or has none."""
@@ -54,7 +55,7 @@ class RecordingRepository(DetectionRepository):
                       AND NOT EXISTS (SELECT 1 FROM public.detections d WHERE d.id = u.detection_id AND d.ruta_grabacion IS NOT NULL)) * %(pending)s
                AS bytes""",
             {"owner": owner, "detection": detection, "pending": MAX_RECORDING_BYTES}).fetchone()
-        return int(row["bytes"])
+        return int(require_row(row)["bytes"])
 
     def link(self, owner: UUID, detection: UUID, path: str, size: int, quota: int) -> None:
         """Records the verified clip on its detection, unless the account's quota would be exceeded."""

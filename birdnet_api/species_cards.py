@@ -17,7 +17,7 @@ from .errors import ErrorCode
 from .language_model import TextWriter
 from .llm_usage import UsageRepository
 from .public_sources import SpeciesFacts, gather
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 from .settings import get_settings
 
 LANGUAGE_NAMES: Final = {CardLanguage.ES: "Spanish (as written in Colombia)", CardLanguage.EN: "English"}
@@ -43,7 +43,7 @@ class SpeciesCardRepository(DetectionRepository):
 
     def save(self, species: str, language: CardLanguage, paragraphs: list[str], sources: list[CardSource], model: str) -> dict[str, Any]:
         with self.trusted_transaction() as connection:
-            return connection.execute(
+            return require_row(connection.execute(
                 """INSERT INTO public.species_cards (especie, idioma, parrafos, fuentes, modelo, version_instrucciones)
                 VALUES (%(species)s, %(language)s, %(paragraphs)s, %(sources)s, %(model)s, %(version)s)
                 ON CONFLICT (especie, idioma) DO UPDATE SET parrafos = excluded.parrafos, fuentes = excluded.fuentes,
@@ -51,7 +51,7 @@ class SpeciesCardRepository(DetectionRepository):
                 RETURNING especie, idioma, parrafos, fuentes, modelo, version_instrucciones, generated_at""",
                 {"species": species, "language": language.value, "paragraphs": json.dumps(paragraphs, ensure_ascii=False),
                  "sources": json.dumps([s.model_dump() for s in sources], ensure_ascii=False), "model": model,
-                 "version": SPECIES_CARD_INSTRUCTIONS_VERSION}).fetchone()
+                 "version": SPECIES_CARD_INSTRUCTIONS_VERSION}).fetchone())
 
 
 def is_stale(row: dict[str, Any], current: datetime, model: str) -> bool:

@@ -48,6 +48,7 @@ def without_personal_data(event: Event, _: Hint) -> Event | None:
         if isinstance(cleaned.get("url"), str):
             cleaned["url"] = IDENTIFIER.sub(IDENTIFIER_PLACEHOLDER, cleaned["url"].split("?", 1)[0])
         event["request"] = cleaned
-    for field in ("user", "server_name", "breadcrumbs"):
-        event.pop(field, None)
+    event.pop("user", None)
+    event.pop("server_name", None)
+    event.pop("breadcrumbs", None)
     return event

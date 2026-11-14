@@ -4,14 +4,14 @@ from pathlib import Path
 
 from birdnet_api.domain import AUDIO_SAMPLE_RATE_HZ, AUDIO_WINDOW_SAMPLES
 from birdnet_api.model_species import MODEL_SPECIES_FILE, model_species
-from tests.test_api import api
+from tests.test_api import api  # noqa: F401 (fixture)
 
 BACKEND = Path(__file__).resolve().parents[1]
 # Versioned files stay under 1 MB (AGENTS.md).
 MAX_VERSIONED_BYTES = 1_000_000
 
 
-def test_routes_live_at_the_api_root(api):
+def test_routes_live_at_the_api_root(api):  # noqa: F811
     client, _, _, _ = api
     assert client.get("/v1/health").json() == {"status": "ok"}
     assert client.get("/v1/model/latest").status_code == 200

@@ -38,7 +38,7 @@ def reference_sounds(species: str) -> ReferenceSounds:
     settings = get_settings()
     if not settings.sounds_api_key:
         raise_error(ErrorCode.SOUNDS_NOT_CONFIGURED)
-    params = {"query": QUERY_TEMPLATE.format(species=species), "key": settings.sounds_api_key, "per_page": PAGE_SIZE}
+    params: dict[str, str | int] = {"query": QUERY_TEMPLATE.format(species=species), "key": settings.sounds_api_key, "per_page": PAGE_SIZE}
     try:
         with httpx.Client(timeout=settings.public_data_timeout_seconds, headers={"User-Agent": USER_AGENT}) as client:
             response = client.get(f"{settings.sounds_api_url}/recordings", params=params)

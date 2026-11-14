@@ -2,3 +2,5 @@
 -c requirements-dev.lock.txt
 pytest==9.1.1
 uvicorn==0.54.0
+ruff==0.17.5
+mypy==2.4.1

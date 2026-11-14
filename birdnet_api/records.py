@@ -16,8 +16,9 @@ from .domain import (
     MAX_RECENT_DETECTIONS,
     MAX_SPECIES_CELLS,
     DbDetectionStatus,
+    visible_status,
 )
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 OWN_RECORD: Final = "d.user_id = %(owner)s AND d.estado <> %(discarded)s"
 OWN_SPECIES: Final = OWN_RECORD + " AND d.especie = %(species)s"
@@ -36,8 +37,9 @@ class RecordRepository(DetectionRepository):
                     max(d.momento) AS last, count(DISTINCT (d.momento AT TIME ZONE %(tz)s)::date) AS days
                 FROM public.detections d WHERE {OWN_RECORD}""", params).fetchone()
             sites = connection.execute("SELECT count(*) AS n FROM public.sites WHERE owner_id = %(owner)s", params).fetchone()
-        return RecordSummary(detections=totals["detections"], species=totals["species"], sites=sites["n"],
-                             first_recorded_at=totals["first"], last_recorded_at=totals["last"], active_days=totals["days"])
+        found = require_row(totals)
+        return RecordSummary(detections=found["detections"], species=found["species"], sites=require_row(sites)["n"],
+                             first_recorded_at=found["first"], last_recorded_at=found["last"], active_days=found["days"])
 
     def located(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> OwnDetectionPage:
         """The caller's songs with a place, newest first; discarded ones are not presence and stay out."""
@@ -52,7 +54,7 @@ class RecordRepository(DetectionRepository):
                 # One extra row tells whether another page follows.
                 self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
         return OwnDetectionPage(detections=[
-            OwnDetection(id=r["id"], species=r["especie"], confidence=r["confianza"], status=DB_TO_API_STATUS[r["estado"]],
+            OwnDetection(id=r["id"], species=r["especie"], confidence=r["confianza"], status=visible_status(r["estado"]),
                          recorded_at=r["momento"], latitude=r["latitude"], longitude=r["longitude"])
             for r in rows[:limit]
         ], has_more=len(rows) > limit)
@@ -116,12 +118,13 @@ class RecordRepository(DetectionRepository):
         hourly = [0] * HOURS_PER_DAY
         for row in hours:
             hourly[row["h"]] = row["n"]
+        totals = require_row(totals)
         return SpeciesRecord(
             species=species, detections=totals["n"], best_confidence=totals["best"], first_recorded_at=totals["first"],
             last_recorded_at=totals["last"], hours=hourly,
             sites=[SpeciesSite(id=r["id"], name=r["nombre"], detections=r["n"]) for r in sites],
             cells=[SpeciesCell(latitude=r["latitude"], longitude=r["longitude"], detections=r["n"]) for r in cells],
-            recent=[SpeciesDetection(id=r["id"], recorded_at=r["momento"], confidence=r["confianza"], status=DB_TO_API_STATUS[r["estado"]],
+            recent=[SpeciesDetection(id=r["id"], recorded_at=r["momento"], confidence=r["confianza"], status=visible_status(r["estado"]),
                                      site_id=r["site_id"], has_recording=r["has_recording"],
                                      reviewed_by=DB_TO_API_REVIEWER[r["revisada_por"]] if r["revisada_por"] else None) for r in recent],
         )

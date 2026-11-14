@@ -13,7 +13,7 @@ import psycopg
 from .contracts import Walk, WalkDetail, WalkInput, WalkPage, WalkPath, WalkPathPage, WalkPlace, WalkSpecies
 from .domain import MAX_WALK_PLACES, MAX_WALK_SPECIES, DbDetectionStatus, track_meters
 from .errors import ErrorCode, raise_error
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 # The walk's songs: the owner's detections within its period that a person did not discard.
 WALK_SONGS: Final = "d.user_id = w.user_id AND d.estado <> %(discarded)s AND d.momento BETWEEN w.inicio AND w.fin"
@@ -65,7 +65,7 @@ class WalkRepository(DetectionRepository):
                         distancia_m = %(distance)s WHERE id = %(id)s AND user_id = %(owner)s""", params)
             else:
                 count = connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %(owner)s", params).fetchone()
-                if count["n"] >= quota:
+                if require_row(count)["n"] >= quota:
                     raise_error(ErrorCode.WALK_QUOTA_EXCEEDED)
                 inserted = connection.execute(
                     """INSERT INTO public.walks (id, user_id, nombre, inicio, fin, recorrido, distancia_m)
@@ -107,7 +107,7 @@ class WalkRepository(DetectionRepository):
                 FROM public.walks w JOIN public.detections d ON {WALK_SONGS}
                 WHERE w.id = %(walk)s AND w.user_id = %(owner)s
                 GROUP BY d.especie, latitude, longitude ORDER BY first, d.especie LIMIT %(places)s""", params).fetchall()
-        return WalkDetail(**walk.model_dump(), track=track["recorrido"],
+        return WalkDetail(**walk.model_dump(), track=require_row(track)["recorrido"],
                           places=[WalkPlace(species=r["especie"], latitude=r["latitude"], longitude=r["longitude"], detections=r["n"],
                                             best_confidence=r["best"], first_recorded_at=r["first"]) for r in places])
 
@@ -145,4 +145,4 @@ class WalkRepository(DetectionRepository):
 
     def usage(self, owner: UUID) -> int:
         with self.transaction(owner) as connection:
-            return connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %s", (owner,)).fetchone()["n"]
+            return require_row(connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %s", (owner,)).fetchone())["n"]
