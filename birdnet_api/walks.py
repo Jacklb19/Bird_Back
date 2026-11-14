@@ -83,14 +83,15 @@ class WalkRepository(DetectionRepository):
             updated = connection.execute("UPDATE public.walks SET nombre = %s WHERE id = %s AND user_id = %s", (name, walk_id, owner)).rowcount
             return self._read(connection, owner, walk_id) if updated else None
 
-    def page(self, owner: UUID, before: datetime | None, limit: int) -> WalkPage:
+    def page(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> WalkPage:
         with self.transaction(owner) as connection:
             rows = connection.execute(
                 f"""SELECT {WALK_COLUMNS}
-                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s)
+                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s
+                    OR (w.inicio = %(before)s AND w.id > %(after_id)s::uuid))
                 ORDER BY w.inicio DESC, w.id LIMIT %(fetch)s""",
                 # One extra row tells whether another page follows.
-                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+                self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
         return WalkPage(walks=[_walk(row) for row in rows[:limit]], has_more=len(rows) > limit)
 
     def detail(self, owner: UUID, walk_id: UUID) -> WalkDetail | None:
@@ -111,14 +112,15 @@ class WalkRepository(DetectionRepository):
                           places=[WalkPlace(species=r["especie"], latitude=r["latitude"], longitude=r["longitude"], detections=r["n"],
                                             best_confidence=r["best"], first_recorded_at=r["first"]) for r in places])
 
-    def paths(self, owner: UUID, before: datetime | None, limit: int) -> WalkPathPage:
+    def paths(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> WalkPathPage:
         """Paths and song places of the newest walks, for "Mi mapa" to draw the walks that are only in the account."""
         with self.transaction(owner) as connection:
             rows = connection.execute(
                 """SELECT w.id, w.inicio, w.fin, w.recorrido FROM public.walks w
-                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s)
+                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s
+                    OR (w.inicio = %(before)s AND w.id > %(after_id)s::uuid))
                 ORDER BY w.inicio DESC, w.id LIMIT %(fetch)s""",
-                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+                self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
             walks = rows[:limit]
             places = connection.execute(
                 f"""SELECT w.id AS walk, d.especie, ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude,

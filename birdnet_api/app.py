@@ -483,13 +483,13 @@ def rename_walk(walk_id: UUID, payload: WalkRename, owner: UUID = Depends(authen
 
 @router.get("/walks", response_model=WalkPage)
 def list_walks(query: Annotated[WalkPageQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPage:
-    return repo.page(owner, query.before, query.limit)
+    return repo.page(owner, query.before, query.limit, query.after_id)
 
 
 @router.get("/walks/paths", response_model=WalkPathPage)
 def walk_paths(query: Annotated[WalkPathQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPathPage:
     # Declared before /walks/{walk_id}, which would otherwise take "paths" for an identifier.
-    return repo.paths(owner, query.before, query.limit)
+    return repo.paths(owner, query.before, query.limit, query.after_id)
 
 
 @router.get("/walks/{walk_id}", response_model=WalkDetail)

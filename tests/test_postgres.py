@@ -424,6 +424,29 @@ def stored_detections(owner):
         return connection.execute("SELECT count(*) FROM public.detections WHERE user_id=%s", (owner,)).fetchone()[0]
 
 
+def test_walk_pages_preserve_equal_start_times(database):
+    from birdnet_api.contracts import WalkInput
+    from birdnet_api.walks import WalkRepository
+
+    _, owner, _ = database
+    repo = WalkRepository()
+    payload = WalkInput.model_validate({"started_at": "2026-11-14T11:00:00Z", "ended_at": "2026-11-14T12:00:00Z", "track": []})
+    expected = {uuid4() for _ in range(5)}
+    for identifier in expected:
+        repo.save(owner, identifier, payload, quota=100)
+    for read in (repo.page, repo.paths):
+        found = []
+        before = after_id = None
+        while True:
+            page = read(owner, before, 2, after_id)
+            found.extend(w.id for w in page.walks)
+            if not page.has_more:
+                break
+            before, after_id = page.walks[-1].started_at, page.walks[-1].id
+        assert expected <= set(found)
+        assert len(found) == len(set(found))
+
+
 def test_walk_rows_reject_paths_beyond_their_bounds(database):
     repo, owner, _ = database
     for name, path in (("x" * 81, "[]"), ("Bien", '{"a": 1}'), ("Bien", "[" + ",".join(["[4.6,-74.1]"] * 2001) + "]")):

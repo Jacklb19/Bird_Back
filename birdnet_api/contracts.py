@@ -527,7 +527,14 @@ class WalkRename(StrictModel):
 class WalkPageQuery(StrictModel):
     """Newest first; `before` is the start of the last walk already received."""
     before: AwareTimestamp | None = None
+    after_id: UUID | None = None
     limit: int = Field(default=DEFAULT_WALK_PAGE, ge=1, le=MAX_WALK_PAGE)
+
+    @model_validator(mode="after")
+    def cursor_has_time(self) -> "WalkPageQuery":
+        if self.after_id is not None and self.before is None:
+            raise ValueError("after_id requires before")
+        return self
 
 
 class WalkSpecies(StrictModel):
@@ -571,9 +578,8 @@ class WalkDetail(Walk):
     places: list[WalkPlace]
 
 
-class WalkPathQuery(StrictModel):
+class WalkPathQuery(WalkPageQuery):
     """Newest first, in smaller pages than the list: each walk carries its whole path."""
-    before: AwareTimestamp | None = None
     limit: int = Field(default=DEFAULT_WALK_PATH_PAGE, ge=1, le=MAX_WALK_PATH_PAGE)
 
 
