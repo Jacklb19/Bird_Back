@@ -233,6 +233,14 @@ class ExportQuery(StrictModel):
     walk_id: UUID | None = None
     since: AwareTimestamp | None = None
     until: AwareTimestamp | None = None
+    after: AwareTimestamp | None = None
+    after_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def complete_cursor(self) -> "ExportQuery":
+        if (self.after is None) != (self.after_id is None):
+            raise ValueError("An export cursor needs both its time and identifier")
+        return self
 
 
 class Profile(StrictModel):

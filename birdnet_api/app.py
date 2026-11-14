@@ -523,15 +523,18 @@ def export(query: Annotated[ExportQuery, Query()], owner: UUID = Depends(authent
         raise_error(ErrorCode.EXPORT_SCOPE_INVALID)
     if query.since and query.until and query.since >= query.until:
         raise_error(ErrorCode.INVALID_PERIOD)
-    body, truncated = repo.export_csv(owner, query.site_id, query.walk_id, query.since, query.until)
+    page = repo.export_page(owner, query.site_id, query.walk_id, query.since, query.until, query.after, query.after_id)
     if query.site_id:
         filename = EXPORT_FILENAME_TEMPLATE.format(site_id=query.site_id)
     elif query.walk_id:
         filename = WALK_EXPORT_FILENAME_TEMPLATE.format(walk_id=query.walk_id)
     else:
         filename = RECORD_EXPORT_FILENAME
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"', TRUNCATED_HEADER: str(truncated).lower()}
-    return Response(content=body, media_type=EXPORT_MEDIA_TYPE, headers=headers)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', TRUNCATED_HEADER: str(page.truncated).lower()}
+    if page.after is not None and page.after_id is not None:
+        headers["X-Next-After"] = page.after.isoformat()
+        headers["X-Next-Id"] = str(page.after_id)
+    return Response(content=page.body, media_type=EXPORT_MEDIA_TYPE, headers=headers)
 
 
 @router.get("/health")
