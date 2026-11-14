@@ -315,6 +315,7 @@ class RecordingUsage(StrictModel):
     recordings: int
     bytes: int
     limit_bytes: int
+    allocated_bytes: int
 
 
 class RecordingsDeleted(StrictModel):

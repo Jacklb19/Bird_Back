@@ -37,6 +37,9 @@ class MemoryRecordings:
         sizes = [size for (user, _), (_, size) in self.links.items() if user == owner]
         return len(sizes), sum(sizes)
 
+    def allocation(self, owner):
+        return self._taken(owner, None)
+
     def path(self, owner, detection_id):
         return self.links.get((owner, detection_id), (None, 0))[0]
 
@@ -140,7 +143,7 @@ def test_recording_links_only_an_own_verified_clip(recording_api):
     assert link({"recording_path": other}).status_code == 422
     assert saved.links == {}
     objects[path] = WEBM
-    assert link({"recording_path": path}).json() == {"recordings": 1, "bytes": len(WEBM), "limit_bytes": QUOTA}
+    assert link({"recording_path": path}).json() == {"recordings": 1, "bytes": len(WEBM), "limit_bytes": QUOTA, "allocated_bytes": MAX_RECORDING_BYTES}
     played = client.get(f"/v1/detections/{row}/recording", headers=headers()).json()
     assert played == {"url": f"https://project.supabase.co/storage/v1/object/sign/recordings/{path}?token=down", "expires_in": 600}
 
@@ -194,7 +197,8 @@ def test_recordings_are_deleted_one_by_one_and_all_at_once(recording_api):
     assert client.get(f"/v1/detections/{rows[0]}/recording", headers=headers()).status_code == 404
     # Deleting what is already gone is not an error.
     assert client.delete(f"/v1/detections/{rows[0]}/recording", headers=headers()).status_code == 204
-    assert client.get("/v1/me/recordings", headers=headers()).json() == {"recordings": 2, "bytes": 2 * len(WEBM), "limit_bytes": QUOTA}
+    assert client.get("/v1/me/recordings", headers=headers()).json() == {"recordings": 2, "bytes": 2 * len(WEBM), "limit_bytes": QUOTA,
+                                                                    "allocated_bytes": 2 * len(WEBM)}
     assert client.delete("/v1/me/recordings", headers=headers()).json() == {"deleted": 2}
     assert objects == {} and saved.links == {}
 

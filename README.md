@@ -44,6 +44,8 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/walks`, `DELETE /v1/me/walks` | Uso (`walks`, `limit`) y borrado de todas las caminatas propias | Sí |
 | `GET /v1/export?site_id=` o `?walk_id=` | Exportación CSV de un sitio, de una caminata o, sin ninguno de los dos, de todo el registro propio | Sí |
 
+Las páginas CSV llevan `X-Truncated`; si hay más filas, `X-Next-After` y `X-Next-Id` contienen el cursor para `after` y `after_id`. La web reúne todas las páginas con una sola cabecera, conservando notas multilínea. Cada página respeta el máximo de bytes UTF-8, además del máximo de filas. Las listas y recorridos de caminatas continúan con `before` y `after_id` (inicio y UUID del último elemento); `before` solo se conserva para clientes anteriores.
+
 ### Ubicación y mapa compartido
 
 - Las coordenadas llegan ya redondeadas a una cuadrícula de 4 decimales (~10 m; `LOCATION_GRID_DECIMALS`); con más decimales la API responde 422 y la base de datos vuelve a redondear por si acaso. Los valores de 3 decimales (~100 m) de clientes y filas anteriores siguen siendo válidos.
@@ -63,7 +65,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ### Revisión y grabaciones
 
 - Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` registra quién revisó: hoy, siempre la persona. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
-- Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla. Una subida firmada y aún no enlazada (`recording_uploads`) cuenta como el clip más grande que admite el bucket hasta que se enlaza o se borra, para que subir sin enlazar no llene Storage (ADR-44).
+- Las grabaciones son privadas e inmutables: las autorizaciones se firman con `upsert=false`. El tope (`RECORDING_QUOTA_BYTES`) reserva 100.000 bytes por autorización durante sus dos horas de validez, también después de enlazar o borrar el clip. Así una declaración menor o una URL reutilizada tras el borrado no libera cuota prematuramente. Antes de autorizar nuevas subidas se eliminan los objetos abandonados cuya autorización caducó; solo entonces se libera su reserva. `bytes` es el tamaño enlazado y `allocated_bytes` incluye reservas. Los reintentos enlazan el objeto existente después de verificarlo.
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
 ### Fichas e informes del modelo de lenguaje (ADR-37)
@@ -101,6 +103,8 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
+.venv/Scripts/python -m ruff check .
+.venv/Scripts/python -m mypy
 .venv/Scripts/python -m pytest
 ```
 
@@ -141,7 +145,8 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `MODEL_RESOURCE_BASE_URL` | Base de `model_file` y `labels_file` relativos | `/models/` |
 | `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST`, `PATCH`, `PUT` o `DELETE` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
 | `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
-| `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
+| `EXPORT_ROW_LIMIT` | Filas máximas por página CSV | `20000` |
+| `EXPORT_BODY_BYTES` | Bytes UTF-8 máximos por página CSV; entre 16.384 y 4.500.000 | `4000000` |
 | `GEMINI_API_KEY` | Clave de Google AI Studio (plan gratuito, sin facturación) | — (503 al escribir una ficha o un informe) |
 | `GEMINI_MODEL`, `GEMINI_API_URL` | Modelo y dirección de la API de Gemini | `gemini-3.5-flash-lite`, `https://generativelanguage.googleapis.com/v1beta` |
 | `LLM_USER_DAILY_QUOTA`, `LLM_DAILY_QUOTA` | Textos nuevos por persona y en total por día; el total, por debajo del límite diario que muestra AI Studio | `10`, `200` |

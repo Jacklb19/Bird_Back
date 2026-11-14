@@ -18,6 +18,11 @@ UPLOAD_LIFETIME_SECONDS = 7200
 
 
 class RecordingRepository(DetectionRepository):
+    def allocation(self, owner: UUID) -> int:
+        """Space committed by linked objects and credentials that can still create objects."""
+        with self.transaction(owner) as connection:
+            return self._taken(connection, owner, None)
+
     def usage(self, owner: UUID) -> tuple[int, int]:
         """How many recordings the caller keeps and the bytes they take."""
         with self.transaction(owner) as connection:
@@ -57,14 +62,14 @@ class RecordingRepository(DetectionRepository):
             connection.execute("DELETE FROM public.recording_uploads WHERE user_id = %s AND detection_id = ANY(%s)", (owner, identifiers))
 
     @staticmethod
-    def _taken(connection: psycopg.Connection[dict[str, Any]], owner: UUID, detection: UUID) -> int:
+    def _taken(connection: psycopg.Connection[dict[str, Any]], owner: UUID, detection: UUID | None) -> int:
         # A live token can upload the bucket maximum, also after deletion. Abandoned objects count until cleaned.
         row = connection.execute(
             """SELECT coalesce(sum(CASE WHEN u.detection_id IS NOT NULL AND
                     (d.ruta_grabacion IS NULL OR u.signed_at >= now() - %(ttl)s * interval '1 second')
                 THEN %(pending)s ELSE coalesce(d.bytes_grabacion, 0) END), 0) AS bytes
             FROM public.detections d LEFT JOIN public.recording_uploads u ON u.detection_id = d.id AND u.user_id = d.user_id
-            WHERE d.user_id = %(owner)s AND d.id <> %(detection)s""",
+            WHERE d.user_id = %(owner)s AND (%(detection)s::uuid IS NULL OR d.id <> %(detection)s)""",
             {"owner": owner, "detection": detection, "pending": MAX_RECORDING_BYTES, "ttl": UPLOAD_LIFETIME_SECONDS}).fetchone()
         return int(require_row(row)["bytes"])
 

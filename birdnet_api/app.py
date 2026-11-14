@@ -334,7 +334,7 @@ def set_sharing(payload: SharingInput, owner: UUID = Depends(authenticate), repo
 @router.get("/me/recordings", response_model=RecordingUsage)
 def recording_usage(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings)) -> RecordingUsage:
     count, size = saved.usage(owner)
-    return RecordingUsage(recordings=count, bytes=size, limit_bytes=get_settings().recording_quota_bytes)
+    return RecordingUsage(recordings=count, bytes=size, limit_bytes=get_settings().recording_quota_bytes, allocated_bytes=saved.allocation(owner))
 
 
 @router.delete("/me/recordings", response_model=RecordingsDeleted)
