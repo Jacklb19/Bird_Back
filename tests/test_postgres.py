@@ -310,11 +310,10 @@ def test_recordings_respect_quota_and_ownership(database):
     repo.batch(owner, rows)
     first, second = (f"{owner}/{row.id}.webm" for row in rows)
     saved.link(owner, rows[0].id, first, 600, 1000)
-    assert saved.reserve(owner, rows[1].id, 400, 1000) and not saved.reserve(owner, rows[1].id, 401, 1000)
+    assert not saved.reserve(owner, rows[1].id, 400, 1000)
     with pytest.raises(HTTPException) as error:
         saved.link(owner, rows[1].id, second, 401, 1000)
     assert error.value.status_code == 507
-    saved.release(owner, rows[1].id)
     # Replacing a detection's own clip does not count it twice.
     saved.link(owner, rows[0].id, first, 1000, 1000)
     assert saved.usage(owner) == (1, 1000)
@@ -339,19 +338,29 @@ def test_clips_signed_but_never_linked_count_against_the_quota(database):
     saved = RecordingRepository()
     rows = [DetectionInput.model_validate(detection()) for _ in range(3)]
     repo.batch(owner, rows)
-    quota = MAX_RECORDING_BYTES + 50_000
-    # Each pending upload counts as the largest clip the bucket takes, until it is linked with its real size.
+    quota = MAX_RECORDING_BYTES * 2
+    # Each live credential counts as the largest clip the bucket takes, also after linking and deletion.
     assert saved.reserve(owner, rows[0].id, 1000, quota) and saved.reserve(owner, rows[1].id, 1000, quota)
     assert not saved.reserve(owner, rows[2].id, 1000, quota)
     saved.link(owner, rows[0].id, f"{owner}/{rows[0].id}.webm", 1000, quota)
-    assert saved.pending_paths(owner) == [f"{owner}/{rows[1].id}.webm"]
+    assert len(saved.pending_paths(owner)) == 2
+    assert not saved.reserve(owner, rows[2].id, 1000, quota)
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("UPDATE public.recording_uploads SET signed_at=now()-interval '3 hours' WHERE user_id=%s", (owner,))
+    deleted = []
+    saved.clean_expired(owner, deleted.extend)
+    assert deleted == [f"{owner}/{rows[1].id}.webm"]
     assert saved.reserve(owner, rows[2].id, 1000, quota)
     # Another account sees no reservation and cannot make one on these detections (RLS, behind the API's own check).
     assert saved.pending_paths(other) == []
     with pytest.raises(HTTPException):
         saved.reserve(other, rows[0].id, 1000, quota)
-    # Deleting every recording forgets the reservations too, whose objects went with them.
+    # Deletion cannot revoke already issued upload credentials. Retain their quota until expiry and cleanup.
     assert saved.unlink_all(owner, saved.paths(owner)) == 1
+    assert len(saved.pending_paths(owner)) == 2
+    with psycopg.connect(TEST_DATABASE_URL) as connection:
+        connection.execute("UPDATE public.recording_uploads SET signed_at=now()-interval '3 hours' WHERE user_id=%s", (owner,))
+    saved.clean_expired(owner, deleted.extend)
     assert saved.pending_paths(owner) == []
     with psycopg.connect(TEST_DATABASE_URL) as connection, pytest.raises(psycopg.errors.ForeignKeyViolation):
         connection.execute("INSERT INTO public.recording_uploads(detection_id,user_id) VALUES (%s,%s)", (uuid4(), owner))

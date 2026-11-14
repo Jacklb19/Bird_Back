@@ -7,7 +7,7 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
@@ -247,13 +247,11 @@ def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = 
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
     # Refused before the upload, so a full account does not spend the transfer; the link checks again. The reservation
     # makes a clip that is uploaded but never linked count against the quota too.
+    saved.clean_expired(owner, storage.delete)
     if not saved.reserve(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
         raise_error(ErrorCode.RECORDING_QUOTA_EXCEEDED)
-    try:
-        return storage.sign(owner, detection_id)
-    except HTTPException:
-        saved.release(owner, detection_id)
-        raise
+    # Even a failed signing response may have issued a credential; retain its reservation until expiry.
+    return storage.sign(owner, detection_id)
 
 
 @router.put("/detections/{detection_id}/recording", response_model=RecordingUsage)
