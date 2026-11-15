@@ -26,7 +26,8 @@ from tests.test_postgres import database  # noqa: F401  (fixture)
 from tests.test_postgres import pytestmark  # noqa: F401  (same isolated database only)
 
 # Tables that hold data of a person; the public ones (species cards, model versions) need no second step.
-PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes", "recording_uploads")
+PERSONAL_TABLES = ("profiles", "sites", "detections", "walks", "site_reports", "llm_usage", "detection_notes", "recording_uploads",
+                   "outings", "observations", "outing_detections", "collections", "collection_items", "wishlist", "beta_deletions")
 
 
 def add_factor(person, status="verified"):
