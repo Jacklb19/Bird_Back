@@ -1,6 +1,6 @@
 """Strict opt-in text requests and closed provider decisions, separate from the existing beta API."""
 from datetime import date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypedDict
 
 from pydantic import BeforeValidator, Field, StrictBool, StrictStr, field_validator, model_validator
 
@@ -125,6 +125,12 @@ InterpretDecision = Annotated[ReadyDecision | ClarificationDecision | RejectedDe
 
 
 class MeasuredResponse(StrictModel):
+    model: str
+    generated_at: datetime
+    usage: TokenUsage
+
+
+class MeasurementFields(TypedDict):
     model: str
     generated_at: datetime
     usage: TokenUsage

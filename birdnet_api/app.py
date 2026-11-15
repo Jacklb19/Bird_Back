@@ -14,6 +14,7 @@ from .accounts import AccountDeletion
 from .auth import authenticate, authenticate_recently
 from .beta.assistant_routes import router as assistant_router
 from .beta.routes import router as beta_router
+from .beta.text_routes import router as text_router
 from .contracts import (
     AccountDeletion as AccountDeletionInput,
     AvatarInput,
@@ -551,3 +552,4 @@ def latest_model() -> dict[str, Any]:
 app.include_router(router)
 app.include_router(beta_router)
 app.include_router(assistant_router)
+app.include_router(text_router)
