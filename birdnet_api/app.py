@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
 from .auth import authenticate, authenticate_recently
+from .beta.routes import router as beta_router
 from .contracts import (
     AccountDeletion as AccountDeletionInput,
     AvatarInput,
@@ -547,3 +548,4 @@ def latest_model() -> dict[str, Any]:
 
 # Routes are copied when the router is included, so this must follow every route definition above.
 app.include_router(router)
+app.include_router(beta_router)
