@@ -61,6 +61,23 @@ def test_stale_update_conflicts_but_identical_acknowledgement_can_be_retried(dat
     assert error.value.status_code == 409
 
 
+def test_concurrent_distinct_updates_can_accept_only_one_expected_version(database):  # noqa: F811
+    _, owner, _ = database
+    repo, identifier = JournalRepository(), uuid4()
+    repo.save_outing(owner, identifier, outing())
+
+    def update(title):
+        try:
+            return repo.save_outing(owner, identifier, outing(title=title, expected_version=1)).version
+        except HTTPException as error:
+            return error.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(update, ("First edit", "Second edit")))
+    assert sorted(results) == [2, 409]
+    assert repo.outing(owner, identifier).version == 2
+
+
 def test_lost_create_then_delete_cannot_be_resurrected_by_a_delayed_queue(database):  # noqa: F811
     _, owner, _ = database
     repo, identifier = JournalRepository(), uuid4()
