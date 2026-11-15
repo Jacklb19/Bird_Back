@@ -46,6 +46,36 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 
 Las páginas CSV llevan `X-Truncated`; si hay más filas, `X-Next-After` y `X-Next-Id` contienen el cursor para `after` y `after_id`. La web reúne todas las páginas con una sola cabecera, conservando notas multilínea. Cada página respeta el máximo de bytes UTF-8, además del máximo de filas. Las listas y recorridos de caminatas continúan con `before` y `after_id` (inicio y UUID del último elemento); `before` solo se conserva para clientes anteriores.
 
+### Diario privado y organización (beta)
+
+Estas rutas requieren sesión y, si la cuenta tiene verificación en dos pasos, `aal2`. La migración nueva es `20261114010000_private_field_journal.sql`; se aplica después de las anteriores. Todas las entidades y sus relaciones son privadas, con RLS y referencias compuestas al mismo dueño. Compartir cantos en el mapa no comparte salidas, observaciones visuales, colecciones ni especies de interés.
+
+| Método y ruta | Propósito |
+|---|---|
+| `GET /v1/outings`, `PUT /v1/outings/{id}`, `GET /v1/outings/{id}`, `DELETE /v1/outings/{id}` | Diario de salidas quietas, caminando o con archivos importados; metadatos, nota privada y referencias opcionales al sitio o recorrido propio |
+| `PUT /v1/outings/{id}/detections/{detection_id}`, `DELETE` sobre la misma ruta | Asociación explícita de una detección propia a una salida; una detección puede pertenecer como máximo a una salida |
+| `GET /v1/outings/{id}/timeline` | Detecciones y observaciones visuales, distinguidas por `kind`; la detección indica si hay una grabación disponible |
+| `GET /v1/observations`, `PUT /v1/observations/{id}`, `GET /v1/observations/{id}`, `DELETE /v1/observations/{id}` | Observaciones visuales manuales del catálogo de especies, con hora, celda opcional, individuos opcionales, nota y salida opcional |
+| `GET /v1/collections`, `PUT /v1/collections/{id}`, `GET /v1/collections/{id}`, `DELETE /v1/collections/{id}` | Colecciones privadas; editar su nombre o nota no reemplaza sus elementos |
+| `PUT /v1/collections/{id}/items/{kind}/{record_id}`, `DELETE` sobre la misma ruta, `GET /v1/collections/{id}/items` | Añadir, quitar y listar detecciones u observaciones propias; un registro puede estar en varias colecciones |
+| `GET /v1/wishlist`, `PUT /v1/wishlist/{species}`, `DELETE /v1/wishlist/{species}` | Lista privada de especies de interés del catálogo de modelos |
+| `GET /v1/deletions` | Marcas mínimas de eliminación para reconciliar la cola local, sin notas ni el contenido borrado |
+
+Los `PUT` de metadatos llevan todos los campos funcionales, incluidos los opcionales como `null`; no son actualizaciones parciales. El UUID lo genera el cliente. Al crear se omite `expected_version` o se envía `null`; al editar se envía la `version` leída. El servidor emite versiones enteras: un reintento con contenido canónico idéntico devuelve la versión actual sin modificarla; un cambio con versión obsoleta responde 409. `DELETE` requiere `?expected_version=` y repetirlo es idempotente. Un UUID borrado no puede resucitar por un reintento pendiente. La cola local conserva los cambios que reciban 409 para que la persona los resuelva.
+
+Las asociaciones y deseos son idempotentes. El cliente debe serializar operaciones sobre una misma relación; operaciones opuestas enviadas por varios dispositivos siguen el orden en que las recibe el servidor. Borrar una salida conserva sus detecciones y observaciones, desvinculando estas últimas; borrar una colección conserva los originales. El borrado de cuenta elimina también estas entidades y sus marcas mínimas.
+
+Las páginas tienen `has_more`, `limit` de 20 por defecto y máximo 50: es un límite de transporte. Listas de metadatos: fecha descendente y UUID ascendente, cursor completo `before` + `after_id`. Línea temporal y elementos de colección: fecha, UUID y `kind` ascendentes, cursor completo `after` + `after_id` + `after_kind`; dos tablas pueden contener el mismo UUID. El ledger usa el mismo cursor triple por fecha de eliminación, UUID y tipo de entidad. Este cursor pagina resultados, no es una secuencia global de confirmaciones; al empezar otra sincronización se reconcilian de nuevo las marcas y no se confía en una marca temporal permanente. La lista de interés continúa con `after_species` alfabético.
+
+Las observaciones manuales llevan `source: "manual"`, sin confianza de modelo. Las fotos permanecen solo en el dispositivo; estas rutas no reciben fotos ni audio. Importar y analizar un archivo ocurre localmente: sincronizar una detección conserva su fecha original y necesita una ubicación redondeada válida, como las detecciones actuales. Los clips elegidos expresamente para la cuenta siguen el flujo privado existente.
+
+### Consulta de bitácora y tutor (beta)
+
+- `POST /v1/assistant/query` acepta una unión cerrada por `intent`: `detections`, `species`, `outings`, `observations`, `collections` o `wishlist`. Ejecuta consultas parametrizadas de solo lectura bajo RLS, devuelve `filters`, `totals`, el array del intent, `has_more` y `usage: null`. Los totales se calculan antes del cursor; no usa Gemini ni cuota. No acepta SQL, texto libre ni historial. No devuelve notas, fotos o coordenadas. `detections` permite `species`, `since`, `until`, `review: "all" | "pending"`; `species` solo agrupa acústicas no descartadas; `outings` filtra por su inicio; `observations` permite además `outing_id`. Las colecciones no llevan filtros adicionales; la lista de interés permite `species`. Los periodos incluyen `since` y excluyen `until`.
+- `POST /v1/assistant/tutor` recibe solo `topic`, `species` opcional e idioma `locale` (`es` o `en`). Los temas son `confidence`, `detection_status`, `recording_privacy`, `approximate_location` y `species_facts`; solo este último requiere una especie del catálogo. El tutor explica conceptos públicos de la aplicación o hechos de GBIF/Wikipedia. Las fuentes las selecciona el servidor y las devuelve con sus licencias; una regla interna sin página pública exacta lleva URL `null`.
+- El tutor nunca recibe texto arbitrario, conversaciones, nombres privados, identificadores, notas, coordenadas, audio, fotos, espectrogramas o resultados de la consulta privada. No identifica especies ni calcula estadísticas. El texto de fuentes públicas se trata como datos, no como instrucciones. La interpretación de preguntas libres queda pendiente de una decisión explícita de privacidad.
+- Usa el modelo y el REST de Gemini ya configurados, de uno a cuatro párrafos y hasta 1200 tokens de salida. El contexto público respeta el límite de transporte de metadatos existente. Comparte las cuotas configuradas por persona y proyecto con fichas e informes, y devuelve cuota si el proveedor no entrega texto utilizable según la política actual. Responde 429 por cuota propia y 503 por configuración o proveedor no disponible; no devuelve un éxito vacío. `usage` contiene los tokens reales informados por el proveedor; un dato ausente o mal formado queda en `null`, sin estimaciones.
+
 ### Ubicación y mapa compartido
 
 - Las coordenadas llegan ya redondeadas a una cuadrícula de 4 decimales (~10 m; `LOCATION_GRID_DECIMALS`); con más decimales la API responde 422 y la base de datos vuelve a redondear por si acaso. Los valores de 3 decimales (~100 m) de clientes y filas anteriores siguen siendo válidos.
@@ -91,6 +121,7 @@ Las páginas CSV llevan `X-Truncated`; si hay más filas, `X-Next-After` y `X-Ne
   - `settings.py`: configuración leída del entorno una sola vez y validada.
   - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, ventana de captura, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
   - `errors.py`: catálogo de errores con su código HTTP y mensaje.
+  - `beta/`: contratos, persistencia y rutas del diario privado, relaciones y organización; `query.py` ejecuta los intents de lectura y `tutor.py` delimita el contexto público del tutor.
   - `manifest.py`: carga del manifiesto del modelo (local o remoto desde los hosts permitidos).
 - `api/index.py`: punto de entrada de la función de Vercel.
 - `supabase/migrations/`: esquema de la base de datos (ejecutar en orden en el SQL Editor de Supabase).
