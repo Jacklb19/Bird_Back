@@ -231,6 +231,7 @@ class WishlistPage(StrictModel):
 
 
 class AssistantBase(PageQuery):
+    limit: int = Field(default=DEFAULT_WALK_PAGE, ge=1, le=MAX_WALK_PAGE, strict=True)
     locale: CardLanguage = CardLanguage.ES
     tz: TimeZoneName = Field(default_factory=_default_time_zone)
 
@@ -332,6 +333,101 @@ class QueryCollection(StrictModel):
     items: int
 
 
+class SpeciesFilters(PeriodFilters):
+    species: str | None
+
+
+class DetectionFilters(SpeciesFilters):
+    review: Literal["all", "pending"]
+
+
+class ObservationFilters(SpeciesFilters):
+    outing_id: UUID | None
+
+
+class EmptyFilters(StrictModel):
+    pass
+
+
+class WishlistFilters(StrictModel):
+    species: str | None
+
+
+class DetectionTotals(StrictModel):
+    detections: int
+    species: int
+
+
+class ObservationTotals(StrictModel):
+    observations: int
+    species: int
+
+
+class OutingTotals(StrictModel):
+    outings: int
+
+
+class CollectionTotals(StrictModel):
+    collections: int
+
+
+class WishlistTotals(StrictModel):
+    species: int
+
+
+class QueryAnswerBase(StrictModel):
+    has_more: bool
+    usage: None = None
+
+
+class DetectionsAnswer(QueryAnswerBase):
+    intent: Literal["detections"] = "detections"
+    filters: DetectionFilters
+    totals: DetectionTotals
+    detections: list[QueryDetection]
+
+
+class SpeciesAnswer(QueryAnswerBase):
+    intent: Literal["species"] = "species"
+    filters: SpeciesFilters
+    totals: DetectionTotals
+    species: list[QuerySpecies]
+
+
+class OutingsAnswer(QueryAnswerBase):
+    intent: Literal["outings"] = "outings"
+    filters: PeriodFilters
+    totals: OutingTotals
+    outings: list[QueryOuting]
+
+
+class ObservationsAnswer(QueryAnswerBase):
+    intent: Literal["observations"] = "observations"
+    filters: ObservationFilters
+    totals: ObservationTotals
+    observations: list[QueryObservation]
+
+
+class CollectionsAnswer(QueryAnswerBase):
+    intent: Literal["collections"] = "collections"
+    filters: EmptyFilters
+    totals: CollectionTotals
+    collections: list[QueryCollection]
+
+
+class WishlistAnswer(QueryAnswerBase):
+    intent: Literal["wishlist"] = "wishlist"
+    filters: WishlistFilters
+    totals: WishlistTotals
+    wishlist: list[WishlistItem]
+
+
+AssistantAnswer = Annotated[
+    DetectionsAnswer | SpeciesAnswer | OutingsAnswer | ObservationsAnswer | CollectionsAnswer | WishlistAnswer,
+    Field(discriminator="intent"),
+]
+
+
 class TutorInput(StrictModel):
     topic: TutorTopic
     species: SpeciesName | None = None
@@ -353,9 +449,9 @@ class TutorSource(StrictModel):
 
 
 class TokenUsage(StrictModel):
-    input_tokens: int | None = Field(ge=0)
-    output_tokens: int | None = Field(ge=0)
-    total_tokens: int | None = Field(ge=0)
+    input_tokens: int | None = Field(ge=0, strict=True)
+    output_tokens: int | None = Field(ge=0, strict=True)
+    total_tokens: int | None = Field(ge=0, strict=True)
 
 
 class TutorAnswer(StrictModel):
