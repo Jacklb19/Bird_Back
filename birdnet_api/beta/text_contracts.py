@@ -7,9 +7,11 @@ from pydantic import BeforeValidator, Field, StrictBool, StrictStr, field_valida
 from ..contracts import StrictModel
 from ..domain import CardLanguage
 from ..language_model import MAX_OUTPUT_TOKENS, MAX_PARAGRAPH_LENGTH, MAX_PARAGRAPHS, MIN_PARAGRAPHS
+from ..model_species import model_species
 from .contracts import AssistantBase, AssistantQuestion, SpeciesName, TokenUsage, TutorAnswer, TutorInput, TutorTopic
 
-CONSENT_VERSION = "assistant-text-v1"
+# v2 (ADR-47): besides the text, an interpretation may carry the active plan (intent, public species, period, review).
+CONSENT_VERSION = "assistant-text-v2"
 TERMS_URL = "https://aistudio.google.com/docs/terms"
 ClarificationCode = Literal["ambiguous_request", "ambiguous_species", "ambiguous_period", "private_reference"]
 RejectionCode = Literal["outside_scope", "unsupported_filter", "unsupported_operation", "identification_request"]
@@ -44,11 +46,6 @@ class TextPolicy(StrictModel):
     max_output_tokens: int = MAX_OUTPUT_TOKENS
 
 
-class InterpretInput(AssistantBase):
-    text: QuestionText
-    consent: TextConsent
-
-
 class TutorQuestionInput(TutorInput):
     text: QuestionText
     consent: TextConsent
@@ -80,6 +77,8 @@ class DatePeriod(StrictModel):
     def ordered(self) -> "DatePeriod":
         if self.first > self.last:
             raise ValueError("First date must not follow last date")
+        if self.last == date.max:
+            raise ValueError("The exclusive end of the period must be representable")
         return self
 
 
@@ -87,10 +86,12 @@ InterpretPeriod = Annotated[AllPeriod | RelativePeriod | DatePeriod, Field(discr
 
 
 class ReadPlan(StrictModel):
-    intent: Literal["detections", "species", "outings", "observations", "collections", "wishlist"]
+    intent: Literal["detections", "species", "outings", "observations", "collections", "wishlist", "compare"]
     species: SpeciesName | None
     period: InterpretPeriod
     review: Literal["all", "pending"]
+    # The second period of a comparison; `period` is then the first one.
+    compare_period: InterpretPeriod | None = None
 
     @model_validator(mode="after")
     def allowed_filters(self) -> "ReadPlan":
@@ -100,6 +101,22 @@ class ReadPlan(StrictModel):
             raise ValueError("Species does not apply to this intent")
         if self.intent in ("collections", "wishlist") and self.period.kind != "all":
             raise ValueError("Period does not apply to this intent")
+        if (self.intent == "compare") != (self.compare_period is not None):
+            raise ValueError("Only a comparison has a second period")
+        return self
+
+
+class InterpretInput(AssistantBase):
+    text: QuestionText
+    consent: TextConsent
+    # The plan of the results the person is looking at (ADR-47): generic descriptors and a public species name only,
+    # never results, identifiers, notes, places, collections or coordinates. Follow-ups adjust it.
+    context: ReadPlan | None = None
+
+    @model_validator(mode="after")
+    def public_context_species(self) -> "InterpretInput":
+        if self.context is not None and self.context.species is not None and self.context.species not in model_species():
+            raise ValueError("Context species must belong to the public model catalogue")
         return self
 
 
@@ -139,6 +156,8 @@ class MeasurementFields(TypedDict):
 class ReadyInterpretation(MeasuredResponse):
     status: Literal["ready"] = "ready"
     query: AssistantQuestion
+    # The plan as words (a relative period stays "yesterday"), so the client can send it back as context.
+    plan: ReadPlan
 
 
 class ClarifiedInterpretation(MeasuredResponse):

@@ -81,6 +81,7 @@ def test_calendar_midnight_leap_year_and_dst_are_resolved_locally():
     {"kind": "dates", "first": "2026-02-29", "last": "2026-03-01"},
     {"kind": "dates", "first": 0, "last": "2026-01-01"},
     {"kind": "dates", "first": "20261114", "last": "2026-11-14"},
+    {"kind": "dates", "first": "9999-12-30", "last": "9999-12-31"},
     {"kind": "all", "value": "yesterday"},
     {"kind": "relative", "value": "arbitrary SQL"},
 ])

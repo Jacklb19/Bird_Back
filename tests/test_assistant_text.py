@@ -142,13 +142,59 @@ def test_interpret_returns_each_reviewable_query_without_private_data(text_api, 
     response = client.post("/v1/assistant/interpret", json={"text": "Mis registros", "locale": "en", "tz": "America/New_York", "limit": 1, "consent": CONSENT}, headers=headers())
     assert response.status_code == 200
     result = response.json()
-    assert set(result) == {"status", "query", "model", "generated_at", "usage"}
+    assert set(result) == {"status", "query", "plan", "model", "generated_at", "usage"}
+    assert result["plan"]["intent"] == intent
     assert result["status"] == "ready" and result["query"]["intent"] == intent
     assert result["query"]["limit"] == 1 and result["query"]["tz"] == "America/New_York"
     assert result["usage"]["total_tokens"] == 35 and counter.spent[owner] == 1
     _, facts, _ = writer.requests[0]
     assert facts == {"text": "Mis registros", "locale": "en"}
     assert str(owner) not in json.dumps(facts) and "tz" not in facts and "limit" not in facts
+
+
+def test_follow_up_sends_only_the_active_plan_and_may_keep_its_species(text_api):
+    client, headers, _, _, writer = text_api
+    context = {"intent": "detections", "species": "Turdus fuscater", "period": {"kind": "relative", "value": "this_week"}, "review": "all", "compare_period": None}
+    writer.answers.append(ready("detections", species="Turdus fuscater", period={"kind": "relative", "value": "yesterday"}))
+    response = client.post("/v1/assistant/interpret", json=body_for("/interpret", text="¿Y ayer?", context=context), headers=headers())
+    assert response.status_code == 200 and response.json()["query"]["species"] == "Turdus fuscater"
+    assert response.json()["plan"]["period"] == {"kind": "relative", "value": "yesterday"}
+    _, facts, _ = writer.requests[0]
+    # The text, the language and the plan's descriptors: no result, identifier, note or place reaches the provider.
+    assert facts == {"text": "¿Y ayer?", "locale": "es", "context": context}
+
+
+@pytest.mark.parametrize("context", [
+    {"intent": "detections", "species": None, "period": {"kind": "all"}, "review": "all", "note": "private"},
+    {"intent": "detections", "species": None, "period": {"kind": "all"}, "review": "all", "outing_id": str(uuid4())},
+    {"intent": "observations", "species": None, "period": {"kind": "all"}, "review": "pending"},
+    {"intent": "detections", "species": "Private place", "period": {"kind": "all"}, "review": "all"},
+])
+def test_context_with_private_or_invalid_fields_is_refused_before_the_provider(text_api, context):
+    client, headers, _, counter, writer = text_api
+    response = client.post("/v1/assistant/interpret", json=body_for("/interpret", context=context), headers=headers())
+    assert response.status_code == 422 and response.json()["code"] == "invalid_assistant_request"
+    assert counter.spent == {} and writer.requests == []
+
+
+def test_a_species_neither_written_nor_in_the_context_is_never_executed(text_api):
+    client, headers, owner, counter, writer = text_api
+    context = {"intent": "detections", "species": "Zonotrichia capensis", "period": {"kind": "all"}, "review": "all"}
+    writer.answers.append(ready("detections", species="Turdus fuscater"))
+    response = client.post("/v1/assistant/interpret", json=body_for("/interpret", text="¿Y ayer?", context=context), headers=headers())
+    assert response.status_code == 503 and counter.spent[owner] == 0 and counter.refunds == 1
+
+
+def test_a_comparison_resolves_two_bounded_periods_or_asks_which(text_api):
+    client, headers, _, _, writer = text_api
+    writer.answers.append(ready("compare", period={"kind": "relative", "value": "this_week"}, compare_period={"kind": "relative", "value": "last_week"}))
+    result = client.post("/v1/assistant/interpret", json=body_for("/interpret", text="Esta semana frente a la pasada"), headers=headers()).json()
+    assert result["query"]["intent"] == "compare"
+    assert result["query"]["first"] == {"since": "2026-11-09T05:00:00Z", "until": "2026-11-16T05:00:00Z"}
+    assert result["query"]["second"] == {"since": "2026-11-02T05:00:00Z", "until": "2026-11-09T05:00:00Z"}
+    writer.answers.append(ready("compare", compare_period={"kind": "relative", "value": "last_week"}))
+    unbounded = client.post("/v1/assistant/interpret", json=body_for("/interpret", text="Todo frente a la semana pasada"), headers=headers()).json()
+    assert unbounded["status"] == "clarification" and unbounded["reason_code"] == "ambiguous_period"
 
 
 def test_interpret_resolves_period_and_requires_explicit_confirmation_elsewhere(text_api):

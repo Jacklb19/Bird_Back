@@ -6,7 +6,8 @@ from ..domain import DB_TO_API_STATUS, DbDetectionStatus
 from ..model_species import require_model_species
 from ..repository import require_row
 from .contracts import (
-    AssistantAnswer, AssistantQuestion, CollectionTotals, CollectionsAnswer, CollectionsQuestion,
+    AssistantAnswer, AssistantQuestion, CollectionTotals, CollectionsAnswer, CollectionsQuestion, CompareAnswer, CompareFilters, CompareQuestion,
+    PeriodSummary,
     DetectionFilters, DetectionTotals, DetectionsAnswer, DetectionsQuestion, EmptyFilters,
     ObservationFilters, ObservationTotals, ObservationsAnswer, ObservationsQuestion, OutingTotals,
     OutingsAnswer, OutingsQuestion, PeriodFilters, QueryCollection, QueryDetection, QueryObservation,
@@ -43,6 +44,8 @@ class QueryRepository(OrganizationRepository):
             return self.observations_answer(owner, question)
         if isinstance(question, CollectionsQuestion):
             return self.collections_answer(owner, question)
+        if isinstance(question, CompareQuestion):
+            return self.compare_answer(owner, question)
         return self.wishlist_answer(owner, question)
 
     @staticmethod
@@ -99,6 +102,32 @@ class QueryRepository(OrganizationRepository):
             rows = c.execute(f"SELECT id FROM public.collections WHERE owner_id=%(owner)s AND {DESCENDING_CURSOR.format(time='created_at')} ORDER BY created_at DESC,id LIMIT %(fetch)s", parameters).fetchall()
             result = [QueryCollection.model_validate(self._collection(c, owner, row["id"]).model_dump(include=set(QueryCollection.model_fields))) for row in rows[:question.limit]]
         return CollectionsAnswer(filters=EmptyFilters(), totals=CollectionTotals.model_validate(total), collections=result, has_more=len(rows) > question.limit)
+
+    def compare_answer(self, owner: UUID, question: CompareQuestion) -> CompareAnswer:
+        # Presence only: discarded songs never count, and visual observations are reported apart from the songs.
+        base = {"owner": owner, "species": question.species, "outing_id": None, "fetch": question.limit + 1}
+        acoustic = ACOUSTIC_FILTERS + " AND estado <> 'descartada'"
+        first = {**base, "since": question.first.since, "until": question.first.until}
+        second = {**base, "since": question.second.since, "until": question.second.until}
+        with self.transaction(owner) as c:
+            def summary(period: dict[str, Any]) -> PeriodSummary:
+                heard = require_row(c.execute(f"SELECT count(*) AS detections,count(DISTINCT especie) AS species FROM public.detections WHERE {acoustic}", period).fetchone())
+                seen = require_row(c.execute(f"SELECT count(*) AS observations,count(DISTINCT species) AS observed_species FROM public.observations WHERE {VISUAL_FILTERS}", period).fetchone())
+                return PeriodSummary(since=period["since"], until=period["until"], **heard, **seen)
+
+            def only(inside: dict[str, Any], outside: dict[str, Any]) -> list[str]:
+                parameters = {**inside, "other_since": outside["since"], "other_until": outside["until"]}
+                rows = c.execute(f"""SELECT DISTINCT especie AS species FROM public.detections WHERE {acoustic}
+                    AND especie NOT IN (SELECT especie FROM public.detections WHERE user_id=%(owner)s AND estado <> 'descartada'
+                        AND momento >= %(other_since)s AND momento < %(other_until)s)
+                    ORDER BY especie LIMIT %(fetch)s""", parameters).fetchall()
+                return [row["species"] for row in rows]
+
+            totals = (summary(first), summary(second))
+            only_first, only_second = only(first, second), only(second, first)
+        return CompareAnswer(filters=CompareFilters(species=question.species), first=totals[0], second=totals[1],
+            only_first=only_first[:question.limit], only_second=only_second[:question.limit],
+            has_more=len(only_first) > question.limit or len(only_second) > question.limit)
 
     def wishlist_answer(self, owner: UUID, question: WishlistQuestion) -> WishlistAnswer:
         parameters = self.parameters(owner, question)

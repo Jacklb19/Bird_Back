@@ -279,8 +279,28 @@ class WishlistQuestion(AssistantBase):
     after_species: SpeciesName | None = None
 
 
+class ComparedPeriod(StrictModel):
+    """A bounded period of a comparison: both ends are required, since "everything" compares with nothing."""
+    since: AwareTimestamp
+    until: AwareTimestamp
+
+    @model_validator(mode="after")
+    def ordered_period(self) -> "ComparedPeriod":
+        if self.since >= self.until:
+            raise ValueError("since must precede until")
+        return self
+
+
+class CompareQuestion(AssistantBase):
+    """Two periods side by side (ADR-47): counts and the species heard in only one of them, all computed in SQL."""
+    intent: Literal["compare"]
+    species: SpeciesName | None = None
+    first: ComparedPeriod
+    second: ComparedPeriod
+
+
 AssistantQuestion = Annotated[
-    DetectionsQuestion | SpeciesQuestion | OutingsQuestion | ObservationsQuestion | CollectionsQuestion | WishlistQuestion,
+    DetectionsQuestion | SpeciesQuestion | OutingsQuestion | ObservationsQuestion | CollectionsQuestion | WishlistQuestion | CompareQuestion,
     Field(discriminator="intent"),
 ]
 
@@ -422,8 +442,32 @@ class WishlistAnswer(QueryAnswerBase):
     wishlist: list[WishlistItem]
 
 
+class PeriodSummary(StrictModel):
+    """One period of a comparison. Songs leave out discarded ones; visual observations are counted apart."""
+    since: datetime
+    until: datetime
+    detections: int
+    species: int
+    observations: int
+    observed_species: int
+
+
+class CompareFilters(StrictModel):
+    species: str | None
+
+
+class CompareAnswer(QueryAnswerBase):
+    intent: Literal["compare"] = "compare"
+    filters: CompareFilters
+    first: PeriodSummary
+    second: PeriodSummary
+    # Species heard in only one of the two periods, alphabetically; at most `limit` of each.
+    only_first: list[str]
+    only_second: list[str]
+
+
 AssistantAnswer = Annotated[
-    DetectionsAnswer | SpeciesAnswer | OutingsAnswer | ObservationsAnswer | CollectionsAnswer | WishlistAnswer,
+    DetectionsAnswer | SpeciesAnswer | OutingsAnswer | ObservationsAnswer | CollectionsAnswer | WishlistAnswer | CompareAnswer,
     Field(discriminator="intent"),
 ]
 

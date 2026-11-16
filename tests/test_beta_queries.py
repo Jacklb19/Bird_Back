@@ -131,3 +131,32 @@ def test_http_query_union_rejects_prose_and_never_uses_the_provider(database, in
                 assert client.post("/v1/assistant/query", json={"intent": intent, **extra}).status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_comparison_counts_presence_per_period_apart_from_observations_and_only_the_owner(journal_data, database):  # noqa: F811
+    repo, owner, other, _, _ = journal_data
+    detections, _, _ = database
+    detections.batch(owner, [DetectionInput.model_validate(detection(species="Colibri coruscans", recorded_at="2026-11-07T12:00:00Z"))])
+    detections.batch(other, [DetectionInput.model_validate(detection(species="Pyrocephalus rubinus", recorded_at="2026-11-14T12:00:00Z"))])
+    week = {"since": "2026-11-09T05:00:00Z", "until": "2026-11-16T05:00:00Z"}
+    before = {"since": "2026-11-02T05:00:00Z", "until": "2026-11-09T05:00:00Z"}
+    result = ask(repo, owner, "compare", first=week, second=before)
+    # The discarded song does not count; the two visual observations are reported apart, never as songs.
+    assert result.first.model_dump(include={"detections", "species", "observations", "observed_species"}) == {
+        "detections": 3, "species": 2, "observations": 2, "observed_species": 1}
+    assert result.second.model_dump(include={"detections", "species", "observations", "observed_species"}) == {
+        "detections": 1, "species": 1, "observations": 0, "observed_species": 0}
+    assert result.only_first == ["Turdus fuscater", "Zonotrichia capensis"] and result.only_second == ["Colibri coruscans"]
+    assert "Pyrocephalus rubinus" not in result.only_first and not result.has_more
+    limited = ask(repo, owner, "compare", first=week, second=before, limit=1)
+    assert limited.only_first == ["Turdus fuscater"] and limited.has_more
+    assert ask(repo, owner, "compare", first=week, second=before, species="Turdus fuscater").only_first == ["Turdus fuscater"]
+
+
+@pytest.mark.parametrize("periods", [
+    {"first": {"since": "2026-11-09T05:00:00Z"}, "second": {"since": "2026-11-02T05:00:00Z", "until": "2026-11-09T05:00:00Z"}},
+    {"first": {"since": "2026-11-09T05:00:00Z", "until": "2026-11-09T05:00:00Z"}, "second": {"since": "2026-11-02T05:00:00Z", "until": "2026-11-09T05:00:00Z"}},
+])
+def test_comparison_needs_two_bounded_ordered_periods(periods):
+    with pytest.raises(ValueError):
+        QUESTION.validate_python({"intent": "compare", **periods})
