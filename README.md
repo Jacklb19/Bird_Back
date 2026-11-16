@@ -2,6 +2,12 @@
 
 API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en Vercel, con PostgreSQL/PostGIS de Supabase y seguridad a nivel de fila. La aplicación web vive en el repositorio [BirdNet](https://github.com/Jacklb19/BirdNet) y reenvía `/api/*` a este servicio.
 
+- [Aplicación publicada](https://birdnet-nu.vercel.app) · [Salud de la API](https://bird-back.vercel.app/v1/health) · [Privacidad](https://birdnet-nu.vercel.app/privacy.html).
+- La API almacena metadatos de detecciones, lugares, caminatas, diario, observaciones manuales, colecciones e interés. Sirve consultas deterministas y un tutor acotado. JWT/AAL autentican cada petición privada; las transacciones asumen el rol de la persona y aplican RLS.
+- BirdNET identifica audio en el navegador; esta API no recibe audio para identificar especies ni entrena modelos. Las grabaciones autorizadas van directamente a Storage privado mediante URLs firmadas. Gemini solo recibe el texto y contexto permitido, nunca audio ni resultados de consultas privadas.
+
+La [definición del proyecto](https://github.com/Jacklb19/BirdNet/blob/main/docs/definicion-proyecto.md), los [ADR](https://github.com/Jacklb19/BirdNet/blob/main/docs/decisiones.md) y el [despliegue conjunto](https://github.com/Jacklb19/BirdNet/blob/main/docs/despliegue.md) viven en el repositorio web. La documentación de endpoints siguiente es el contrato público; no se expone OpenAPI en producción.
+
 ## Endpoints
 
 | Método y ruta | Propósito | Sesión |
@@ -153,25 +159,61 @@ Los errores nuevos de las dos rutas POST llevan `detail` fijo y `code`: `consent
 
 ## Desarrollo local
 
-```bash
-python -m venv .venv
-.venv/Scripts/python -m pip install -r requirements-dev.txt
-.venv/Scripts/python -m ruff check .
-.venv/Scripts/python -m mypy
-.venv/Scripts/python -m pytest
+Requiere **Python 3.12** (3.12.14 en la verificación local), PostgreSQL con PostGIS para integración y Docker si se usa la base temporal siguiente. Dependencias runtime fijadas en `requirements.txt`; herramientas y restricciones en `requirements-dev.txt` y `requirements-dev.lock.txt`. No es necesario instalar paquetes de conversión de modelos en el entorno de la API.
+
+Desde `backend/`, en PowerShell:
+
+```powershell
+py -3.12 -m venv .venv
+.venv/Scripts/python.exe -m pip install -r requirements-dev.txt
+Copy-Item .env.example .env
 ```
 
-Pruebas contra PostGIS real (opcional):
+`.env` sirve como plantilla local ignorada: **la API no lo carga automáticamente**. Definir las variables en el entorno del proceso, por ejemplo:
 
-```bash
-docker run --name birdnet-test --rm -d -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55434:5432 postgis/postgis@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
-.venv/Scripts/python tests/prepare_database.py
-BIRDNET_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55434/birdnet_s4_test .venv/Scripts/python -m pytest
+```powershell
+$env:DATABASE_URL = '<cadena de conexión del proyecto de desarrollo>'
+$env:SUPABASE_AUTH_ISSUER = 'https://<proyecto>.supabase.co/auth/v1'
+$env:MODEL_RESOURCE_BASE_URL = 'https://<proyecto>.supabase.co/storage/v1/object/public/models/birdnet-v2.4'
+.venv/Scripts/python.exe -m uvicorn birdnet_api.app:app --host 127.0.0.1 --port 8000
 ```
+
+Para uso interactivo, Auth y base deben pertenecer al mismo proyecto preparado mediante las migraciones. Las funciones opcionales de Storage/Gemini necesitan sus variables; no copiar secretos de producción ni publicar `.env`. El modo de pruebas siguiente utiliza Auth ficticio y una base loopback, sin cuentas reales.
+
+En Linux/macOS, crear el entorno con `python3.12 -m venv .venv`, usar `.venv/bin/python` y `export NOMBRE='valor'` en lugar de `$env:NOMBRE = 'valor'`. Para instalar, ` .venv/bin/python -m pip install -r requirements-dev.txt`; para arrancar, ` .venv/bin/python -m uvicorn birdnet_api.app:app --host 127.0.0.1 --port 8000`.
+
+### Verificación
+
+```powershell
+.venv/Scripts/python.exe -m ruff check .
+.venv/Scripts/python.exe -m mypy
+.venv/Scripts/python.exe -m pytest -q
+.venv/Scripts/python.exe -m compileall -q birdnet_api api
+```
+
+Sin la variable de integración, pytest omite explícitamente las pruebas PostGIS: un resultado correcto sin ellas no acredita RLS ni las migraciones reales. La API no tiene un build local de frontend; `compileall` y las pruebas de empaquetado comprueban el código y el contrato de Vercel.
+
+Para la suite completa, comprobar que 55434 esté libre y crear un contenedor **propio** con la imagen fijada. `prepare_database.py` solo prepara la base de pruebas loopback en ese puerto; no acepta una URL de producción.
+
+```powershell
+docker run --name trino-local-test --rm -d -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55434:5432 postgis/postgis@sha256:94146ac37bc61e2322f88016056c5920729cb8c64c8542ed590af8fc2abdac07
+# Esperar a que PostgreSQL acepte conexiones antes de preparar la base.
+docker exec trino-local-test pg_isready -U postgres
+.venv/Scripts/python.exe tests/prepare_database.py
+$env:BIRDNET_TEST_DATABASE_URL = 'postgresql://postgres@127.0.0.1:55434/birdnet_s4_test'
+.venv/Scripts/python.exe -m pytest -q
+docker stop trino-local-test
+```
+
+En Bash, la asignación para integrar es `export BIRDNET_TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:55434/birdnet_s4_test`; usar después `.venv/bin/python -m pytest -q`. Las E2E de la web necesitan la misma base preparada; conservarla hasta que terminen y detener solo ese contenedor al cerrar. Playwright inicia `tests.local_server:app`, excluido del paquete desplegado, con sesiones firmadas ficticias. No arrancar ese servidor de pruebas en una interfaz pública.
+
+CI aplica todas las migraciones desde cero en PostGIS temporal y ejecuta Ruff, mypy y pytest. Los resultados con usuarios ficticios no sustituyen las [pruebas manuales](https://github.com/Jacklb19/BirdNet/blob/main/docs/pruebas.md) de cuentas, MFA, Storage, Gemini/cuotas y campo. Los informes mantienen redacción libre y su limitación de asociación semántica de cifras (A14).
 
 ## Despliegue
 
 Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.env.example` (`DATABASE_URL`, `SUPABASE_AUTH_ISSUER`, `MODEL_RESOURCE_BASE_URL` como mínimo).
+
+Preset *Other*, entrada `api/index.py` y `maxDuration: 60` explícito en `vercel.json`. Vercel instala `requirements.txt`: no añadir un manifiesto Python que lo oculte sin declarar también las dependencias runtime. Los archivos grandes van por Storage; el cuerpo JSON está acotado y el CSV se pagina por bytes. Se mantienen los planes Hobby/Free. El dueño aplica migraciones **nuevas** en orden, publica primero API y después web mediante merge a `main`; no modificar migraciones ya aplicadas ni ejecutar despliegues como parte de los tests.
 
 ## Configuración
 
@@ -209,3 +251,9 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `XENO_CANTO_API_URL`, `SOUNDS_CACHE_DAYS` | Dirección de la API de xeno-canto y días que la CDN de Vercel guarda la respuesta de una especie | `https://xeno-canto.org/api/3`, `7` |
 | `SENTRY_DSN` | Proyecto de Sentry que recibe los errores, sin datos personales (`VERCEL_ENV` separa producción de vista previa) | — (no se envía nada) |
 | `DEFAULT_TIME_ZONE` | Zona horaria IANA de las estadísticas y del registro personal si el cliente no envía `tz` | `America/Bogota` |
+
+## Fuentes, licencias y privacidad
+
+Las fichas reúnen contexto público de GBIF y Wikipedia; los cantos de referencia proceden de xeno-canto y conservan grabador, catálogo y licencia individual. Los modelos/etiquetas BirdNET se sirven como recursos versionados, con sus propias licencias: [v2.4, CC BY-NC-SA 4.0](https://huggingface.co/tphakala/BirdNET-v2.4/blob/main/LICENSE) y [V3, Apache 2.0](https://github.com/birdnet-team/birdnet-live-app/blob/main/MODEL_LICENSE). Los [créditos de la web](https://github.com/Jacklb19/BirdNet#fuentes-y-licencias) reúnen las demás fuentes.
+
+El código propio no tiene una licencia declarada por ahora, por decisión del dueño. Las licencias de terceros no se extienden automáticamente a toda la aplicación. Las notas y organización son privadas; compartir detecciones no comparte el diario. La [política de privacidad](https://birdnet-nu.vercel.app/privacy.html) explica qué datos salen del dispositivo, el consentimiento de texto y el borrado.
