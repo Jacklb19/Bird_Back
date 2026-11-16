@@ -1,5 +1,6 @@
 """Keep test servers, credentials and model binaries outside the function package."""
 import json
+import tomllib
 from pathlib import Path
 
 from birdnet_api.domain import AUDIO_SAMPLE_RATE_HZ, AUDIO_WINDOW_SAMPLES
@@ -9,6 +10,18 @@ from tests.test_api import api  # noqa: F401 (fixture)
 BACKEND = Path(__file__).resolve().parents[1]
 # Versioned files stay under 1 MB (AGENTS.md).
 MAX_VERSIONED_BYTES = 1_000_000
+
+
+def test_selected_python_manifest_declares_runtime_dependencies():
+    required = {
+        line.strip() for line in (BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    manifest = BACKEND / "pyproject.toml"
+    # Vercel prioritizes this file even when it contains only development-tool settings.
+    declared = set(tomllib.loads(manifest.read_text(encoding="utf-8")).get("project", {}).get("dependencies", [])) if manifest.exists() else required
+    assert any(dependency.startswith("fastapi==") for dependency in required)
+    assert required <= declared, "The manifest selected by Vercel must include every locked runtime dependency"
 
 
 def test_routes_live_at_the_api_root(api):  # noqa: F811
