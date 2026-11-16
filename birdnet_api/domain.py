@@ -79,6 +79,14 @@ SubmittedDetectionStatus = Literal[DetectionStatus.CONFIRMED, DetectionStatus.PR
 MapDetectionStatus = Literal[DetectionStatus.CONFIRMED, DetectionStatus.PROVISIONAL, DetectionStatus.VERIFIED, DetectionStatus.CORRECTED]
 
 
+def visible_status(stored: DbDetectionStatus) -> MapDetectionStatus:
+    """Queries of presence must exclude discarded rows before mapping their result."""
+    status = DB_TO_API_STATUS[stored]
+    if status is DetectionStatus.DISCARDED:
+        raise ValueError("A discarded detection is not presence")
+    return status
+
+
 def local_status(confidence: float) -> SubmittedDetectionStatus:
     """State the device must assign to a kept detection with this confidence."""
     return DetectionStatus.CONFIRMED if confidence >= CONFIDENCE_CONFIRMED_FROM else DetectionStatus.PROVISIONAL
@@ -87,18 +95,14 @@ def local_status(confidence: float) -> SubmittedDetectionStatus:
 class StatsPeriod(StrEnum):
     """Statistics periods with their length in days (None is the whole record); mirrors PERIODS in the client."""
 
-    days: int | None
+    WEEK = "week"
+    MONTH = "month"
+    YEAR = "year"
+    ALL = "all"
 
-    WEEK = ("week", 7)
-    MONTH = ("month", 30)
-    YEAR = ("year", 365)
-    ALL = ("all", None)
-
-    def __new__(cls, value: str, days: int | None) -> "StatsPeriod":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.days = days
-        return member
+    @property
+    def days(self) -> int | None:
+        return {self.WEEK: 7, self.MONTH: 30, self.YEAR: 365, self.ALL: None}[self]
 
 
 DEFAULT_STATS_PERIOD: Final = StatsPeriod.MONTH

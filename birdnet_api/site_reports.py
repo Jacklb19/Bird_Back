@@ -17,7 +17,7 @@ from .domain import MAX_REPORT_SPECIES, SITE_REPORT_INSTRUCTIONS_VERSION, CardLa
 from .errors import ErrorCode, raise_error
 from .language_model import TextWriter
 from .llm_usage import UsageRepository
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 from .settings import get_settings
 
 LANGUAGE_NAMES: Final = {CardLanguage.ES: "Spanish (as written in Colombia)", CardLanguage.EN: "English"}
@@ -107,7 +107,7 @@ class SiteReportRepository(DetectionRepository):
     def save(self, owner: UUID, site_id: UUID, stats: SiteStats, tz: str, language: CardLanguage, paragraphs: list[str], model: str) -> dict[str, Any]:
         # The caller has just read the site's statistics under RLS, which proves the site is the owner's.
         with self.trusted_transaction() as connection:
-            return connection.execute(
+            return require_row(connection.execute(
                 """INSERT INTO public.site_reports (site_id, user_id, periodo, idioma, zona_horaria, cifras, huella, parrafos, modelo, version_instrucciones)
                 VALUES (%(site)s, %(owner)s, %(period)s, %(language)s, %(tz)s, %(stats)s, %(digest)s, %(paragraphs)s, %(model)s, %(version)s)
                 ON CONFLICT (site_id, periodo, idioma) DO UPDATE SET zona_horaria = excluded.zona_horaria, cifras = excluded.cifras,
@@ -116,7 +116,7 @@ class SiteReportRepository(DetectionRepository):
                 RETURNING periodo, idioma, zona_horaria, cifras, huella, parrafos, modelo, version_instrucciones, generated_at""",
                 {"site": site_id, "owner": owner, "period": stats.period.value, "language": language.value, "tz": tz,
                  "stats": stats.model_dump_json(), "digest": fingerprint(stats, tz), "paragraphs": json.dumps(paragraphs, ensure_ascii=False),
-                 "model": model, "version": SITE_REPORT_INSTRUCTIONS_VERSION}).fetchone()
+                 "model": model, "version": SITE_REPORT_INSTRUCTIONS_VERSION}).fetchone())
 
 
 def is_current(row: dict[str, Any], stats: SiteStats, tz: str, model: str) -> bool:

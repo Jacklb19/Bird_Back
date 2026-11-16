@@ -34,7 +34,7 @@ LIST_PAGE_SIZE: Final = 1000
 # Body field of a bulk removal: the object keys to delete from the bucket.
 REMOVE_KEYS_FIELD: Final = "prefixes"
 API_KEY_HEADER: Final = "apikey"
-# Object paths are deterministic, so a retry after a lost response (or a new photo) must be allowed to overwrite.
+# Avatars can be replaced; recordings must remain immutable after their size has been verified.
 UPSERT_HEADER: Final = "x-upsert"
 
 logger = logging.getLogger(__name__)
@@ -59,10 +59,10 @@ class BucketStorage:
             raise_error(ErrorCode.STORAGE_NOT_CONFIGURED)
         return httpx.Client(base_url=f"{self.base}{STORAGE_API_PATH}", headers={API_KEY_HEADER: self.secret, "Authorization": f"Bearer {self.secret}"}, timeout=self.timeout)
 
-    def sign_upload(self, path: str) -> str:
+    def sign_upload(self, path: str, *, upsert: bool = True) -> str:
         try:
             with self.client() as client:
-                response = client.post(f"{SIGNED_UPLOAD_PATH}{self.bucket}/{path}", headers={UPSERT_HEADER: "true"}, json={})
+                response = client.post(f"{SIGNED_UPLOAD_PATH}{self.bucket}/{path}", headers={UPSERT_HEADER: str(upsert).lower()}, json={})
                 response.raise_for_status()
                 return self._absolute(response.json()[SIGNED_UPLOAD_URL_FIELD], SIGNED_UPLOAD_PATH)
         except (httpx.HTTPError, KeyError, ValueError):
@@ -154,7 +154,7 @@ class RecordingStorage(BucketStorage):
 
     def sign(self, owner: UUID, detection: UUID) -> RecordingUpload:
         path = recording_object_path(owner, detection)
-        return RecordingUpload(upload_url=self.sign_upload(path), recording_path=path)
+        return RecordingUpload(upload_url=self.sign_upload(path, upsert=False), recording_path=path)
 
     def verify(self, owner: UUID, detection: UUID, path: str) -> int:
         """Size in bytes of the uploaded clip, once its path and content have been checked."""

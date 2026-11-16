@@ -28,4 +28,4 @@ def test_signs_only_storage_relative_upload_urls(monkeypatch):
     with pytest.raises(HTTPException) as error:
         clips.sign(owner, detection)
     assert error.value.status_code == 502
-    assert requests == [(f"/storage/v1/object/upload/sign/recordings/{path}", "true")] * 2
+    assert requests == [(f"/storage/v1/object/upload/sign/recordings/{path}", "false")] * 2

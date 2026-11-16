@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from birdnet_api.app import app, exports, now, sites
 from birdnet_api.contracts import Site, SiteStats
+from birdnet_api.exports import CsvPage
 from tests.test_api import api  # noqa: F401  (fixture)
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
@@ -51,6 +52,9 @@ class MemorySites:
             self._check(owner, site_id)
         self.exports.append((site_id, walk_id))
         return "id,species\n", False
+
+    def export_page(self, owner, site_id, walk_id, since, until, after, after_id):
+        return CsvPage(*self.export_csv(owner, site_id, walk_id, since, until))
 
 
 @pytest.fixture

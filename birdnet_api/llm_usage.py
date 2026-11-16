@@ -9,7 +9,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from .errors import ErrorCode, raise_error
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 # Google resets the free tier's daily quota at midnight Pacific time; the caps follow the same day.
 QUOTA_TIME_ZONE: Final = ZoneInfo("America/Los_Angeles")
@@ -27,7 +27,7 @@ class UsageRepository(DetectionRepository):
         day = quota_day(current).date()
         with self.trusted_transaction() as connection:
             connection.execute("SELECT pg_advisory_xact_lock(%s)", (USAGE_LOCK_KEY,))
-            used = connection.execute("SELECT coalesce(sum(textos), 0) AS n FROM public.llm_usage WHERE dia = %s", (day,)).fetchone()["n"]
+            used = require_row(connection.execute("SELECT coalesce(sum(textos), 0) AS n FROM public.llm_usage WHERE dia = %s", (day,)).fetchone())["n"]
             taken = None
             if used < total:
                 taken = connection.execute(

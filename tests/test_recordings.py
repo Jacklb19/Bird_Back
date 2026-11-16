@@ -4,7 +4,7 @@ The quota arithmetic and the review states are SQL; test_postgres.py checks them
 """
 import json
 from functools import partial
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -18,7 +18,7 @@ from birdnet_api.storage import RecordingStorage
 from tests.test_api import api, detection  # noqa: F401  (fixture)
 
 WEBM = bytes.fromhex("1a45dfa3") + bytes(60)
-QUOTA = 1000
+QUOTA = MAX_RECORDING_BYTES * 2
 # Room for exactly one clip that is uploaded but not linked, which counts as the largest clip the bucket accepts.
 ROOMY_QUOTA = MAX_RECORDING_BYTES
 
@@ -37,32 +37,33 @@ class MemoryRecordings:
         sizes = [size for (user, _), (_, size) in self.links.items() if user == owner]
         return len(sizes), sum(sizes)
 
+    def allocation(self, owner):
+        return self._taken(owner, None)
+
     def path(self, owner, detection_id):
         return self.links.get((owner, detection_id), (None, 0))[0]
 
     def _taken(self, owner, detection_id):
-        linked = sum(stored for (user, other), (_, stored) in self.links.items() if user == owner and other != detection_id)
-        waiting = [key for key in self.pending if key[0] == owner and key[1] != detection_id and key not in self.links]
+        linked = sum(stored for (user, other), (_, stored) in self.links.items() if user == owner and other != detection_id and (user, other) not in self.pending)
+        waiting = [key for key in self.pending if key[0] == owner and key[1] != detection_id]
         return linked + len(waiting) * MAX_RECORDING_BYTES
 
     def reserve(self, owner, detection_id, size, quota):
-        if self._taken(owner, detection_id) + size > quota:
+        if self._taken(owner, detection_id) + MAX_RECORDING_BYTES > quota:
             return False
         self.pending.add((owner, detection_id))
         return True
 
-    def release(self, owner, detection_id):
-        self.pending.discard((owner, detection_id))
+    def clean_expired(self, owner, remove):
+        pass  # Expiration and cleanup are covered against PostgreSQL.
 
     def link(self, owner, detection_id, path, size, quota):
-        if self._taken(owner, detection_id) + size > quota:
+        if self._taken(owner, detection_id) + (MAX_RECORDING_BYTES if (owner, detection_id) in self.pending else size) > quota:
             raise HTTPException(507, "Quota")
         self.links[(owner, detection_id)] = (path, size)
-        self.pending.discard((owner, detection_id))
 
     def unlink(self, owner, detection_id):
         self.links.pop((owner, detection_id), None)
-        self.pending.discard((owner, detection_id))
 
     def paths(self, owner):
         return [path for (user, _), (path, _) in self.links.items() if user == owner]
@@ -71,7 +72,6 @@ class MemoryRecordings:
         return [f"{user}/{detection_id}.webm" for user, detection_id in self.pending if user == owner]
 
     def unlink_all(self, owner, paths):
-        self.pending = {key for key in self.pending if key[0] != owner}
         mine = [key for key, (path, _) in self.links.items() if key[0] == owner and path in paths]
         for key in mine:
             del self.links[key]
@@ -91,6 +91,7 @@ def recording_api(api, monkeypatch):  # noqa: F811
     def serve(request):
         path = request.url.path.removeprefix("/storage/v1")
         if path.startswith("/object/upload/sign/"):
+            assert request.headers["x-upsert"] == "false"
             return httpx.Response(200, json={"url": f"{path}?token=up"})
         if path.startswith("/object/sign/"):
             return httpx.Response(200, json={"signedURL": f"{path}?token=down"})
@@ -142,7 +143,7 @@ def test_recording_links_only_an_own_verified_clip(recording_api):
     assert link({"recording_path": other}).status_code == 422
     assert saved.links == {}
     objects[path] = WEBM
-    assert link({"recording_path": path}).json() == {"recordings": 1, "bytes": len(WEBM), "limit_bytes": QUOTA}
+    assert link({"recording_path": path}).json() == {"recordings": 1, "bytes": len(WEBM), "limit_bytes": QUOTA, "allocated_bytes": MAX_RECORDING_BYTES}
     played = client.get(f"/v1/detections/{row}/recording", headers=headers()).json()
     assert played == {"url": f"https://project.supabase.co/storage/v1/object/sign/recordings/{path}?token=down", "expires_in": 600}
 
@@ -168,18 +169,20 @@ def test_recordings_are_private_to_their_author(recording_api):
     assert path in objects and saved.links
 
 
-def test_recording_quota_is_enforced_before_and_after_the_upload(recording_api):
+def test_recording_quota_is_enforced_before_and_after_the_upload(recording_api, monkeypatch):
     client, saved, objects, headers, owner, synchronized = recording_api
     first, second = synchronized(), synchronized()
-    big = bytes.fromhex("1a45dfa3") + bytes(QUOTA - 104)
+    monkeypatch.setenv("RECORDING_QUOTA_BYTES", "1000")
+    get_settings.cache_clear()
+    big = bytes.fromhex("1a45dfa3") + bytes(896)
     objects[f"{owner}/{first}.webm"] = big
     assert client.put(f"/v1/detections/{first}/recording", json={"recording_path": f"{owner}/{first}.webm"}, headers=headers()).status_code == 200
-    # 900 of 1000 bytes are taken: a 200-byte clip is refused when it is declared and again when it is linked.
+    # No maximum-size reservation fits in the remaining 104 bytes.
     assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(200), headers=headers()).status_code == 507
     objects[f"{owner}/{second}.webm"] = bytes.fromhex("1a45dfa3") + bytes(196)
     assert client.put(f"/v1/detections/{second}/recording", json={"recording_path": f"{owner}/{second}.webm"}, headers=headers()).status_code == 507
-    # Replacing a detection's own clip does not count it twice.
-    assert client.post(f"/v1/detections/{first}/recording-url", json=declaration(len(big)), headers=headers()).status_code == 200
+    # Every live upload token reserves the maximum the bucket accepts, even when the declaration is smaller.
+    assert client.post(f"/v1/detections/{first}/recording-url", json=declaration(len(big)), headers=headers()).status_code == 507
     assert len(saved.links) == 1
 
 
@@ -194,7 +197,8 @@ def test_recordings_are_deleted_one_by_one_and_all_at_once(recording_api):
     assert client.get(f"/v1/detections/{rows[0]}/recording", headers=headers()).status_code == 404
     # Deleting what is already gone is not an error.
     assert client.delete(f"/v1/detections/{rows[0]}/recording", headers=headers()).status_code == 204
-    assert client.get("/v1/me/recordings", headers=headers()).json() == {"recordings": 2, "bytes": 2 * len(WEBM), "limit_bytes": QUOTA}
+    assert client.get("/v1/me/recordings", headers=headers()).json() == {"recordings": 2, "bytes": 2 * len(WEBM), "limit_bytes": QUOTA,
+                                                                    "allocated_bytes": 2 * len(WEBM)}
     assert client.delete("/v1/me/recordings", headers=headers()).json() == {"deleted": 2}
     assert objects == {} and saved.links == {}
 
@@ -209,11 +213,14 @@ def test_a_clip_uploaded_but_never_linked_still_counts_and_is_deleted(recording_
     # Never linked: without the reservation, unlimited unlinked uploads could fill the project's Storage.
     assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(), headers=headers()).status_code == 507
     assert client.delete(f"/v1/detections/{first}/recording", headers=headers()).status_code == 204
-    assert objects == {} and saved.pending == set()
+    assert objects == {} and saved.pending == {(owner, UUID(first))}
+    assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(), headers=headers()).status_code == 507
+    # The old credential still works: deletion cannot release its reservation prematurely.
+    saved.pending.clear()
     assert client.post(f"/v1/detections/{second}/recording-url", json=declaration(), headers=headers()).status_code == 200
     objects[f"{owner}/{second}.webm"] = WEBM
     assert client.delete("/v1/me/recordings", headers=headers()).json() == {"deleted": 0}
-    assert objects == {} and saved.pending == set()
+    assert objects == {} and len(saved.pending) == 1
 
 
 @pytest.mark.parametrize("body", [{"action": "correct"}, {"action": "confirm", "species": "Turdus fuscater"}, {"action": "discard", "species": "Turdus fuscater"},

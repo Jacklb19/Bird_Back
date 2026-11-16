@@ -7,11 +7,14 @@ from http import HTTPStatus
 from typing import Annotated, Any, Final
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Path, Query, Request
 from fastapi.responses import JSONResponse, Response
 
 from .accounts import AccountDeletion
 from .auth import authenticate, authenticate_recently
+from .beta.assistant_routes import router as assistant_router
+from .beta.routes import router as beta_router
+from .beta.text_routes import router as text_router
 from .contracts import (
     AccountDeletion as AccountDeletionInput,
     AvatarInput,
@@ -247,13 +250,11 @@ def recording_upload(detection_id: UUID, payload: RecordingInput, owner: UUID = 
         raise_error(ErrorCode.DETECTION_NOT_FOUND)
     # Refused before the upload, so a full account does not spend the transfer; the link checks again. The reservation
     # makes a clip that is uploaded but never linked count against the quota too.
+    saved.clean_expired(owner, storage.delete)
     if not saved.reserve(owner, detection_id, payload.size_bytes, get_settings().recording_quota_bytes):
         raise_error(ErrorCode.RECORDING_QUOTA_EXCEEDED)
-    try:
-        return storage.sign(owner, detection_id)
-    except HTTPException:
-        saved.release(owner, detection_id)
-        raise
+    # Even a failed signing response may have issued a credential; retain its reservation until expiry.
+    return storage.sign(owner, detection_id)
 
 
 @router.put("/detections/{detection_id}/recording", response_model=RecordingUsage)
@@ -336,7 +337,7 @@ def set_sharing(payload: SharingInput, owner: UUID = Depends(authenticate), repo
 @router.get("/me/recordings", response_model=RecordingUsage)
 def recording_usage(owner: UUID = Depends(authenticate), saved: RecordingRepository = Depends(recordings)) -> RecordingUsage:
     count, size = saved.usage(owner)
-    return RecordingUsage(recordings=count, bytes=size, limit_bytes=get_settings().recording_quota_bytes)
+    return RecordingUsage(recordings=count, bytes=size, limit_bytes=get_settings().recording_quota_bytes, allocated_bytes=saved.allocation(owner))
 
 
 @router.delete("/me/recordings", response_model=RecordingsDeleted)
@@ -483,13 +484,13 @@ def rename_walk(walk_id: UUID, payload: WalkRename, owner: UUID = Depends(authen
 
 @router.get("/walks", response_model=WalkPage)
 def list_walks(query: Annotated[WalkPageQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPage:
-    return repo.page(owner, query.before, query.limit)
+    return repo.page(owner, query.before, query.limit, query.after_id)
 
 
 @router.get("/walks/paths", response_model=WalkPathPage)
 def walk_paths(query: Annotated[WalkPathQuery, Query()], owner: UUID = Depends(authenticate), repo: WalkRepository = Depends(walks)) -> WalkPathPage:
     # Declared before /walks/{walk_id}, which would otherwise take "paths" for an identifier.
-    return repo.paths(owner, query.before, query.limit)
+    return repo.paths(owner, query.before, query.limit, query.after_id)
 
 
 @router.get("/walks/{walk_id}", response_model=WalkDetail)
@@ -523,15 +524,18 @@ def export(query: Annotated[ExportQuery, Query()], owner: UUID = Depends(authent
         raise_error(ErrorCode.EXPORT_SCOPE_INVALID)
     if query.since and query.until and query.since >= query.until:
         raise_error(ErrorCode.INVALID_PERIOD)
-    body, truncated = repo.export_csv(owner, query.site_id, query.walk_id, query.since, query.until)
+    page = repo.export_page(owner, query.site_id, query.walk_id, query.since, query.until, query.after, query.after_id)
     if query.site_id:
         filename = EXPORT_FILENAME_TEMPLATE.format(site_id=query.site_id)
     elif query.walk_id:
         filename = WALK_EXPORT_FILENAME_TEMPLATE.format(walk_id=query.walk_id)
     else:
         filename = RECORD_EXPORT_FILENAME
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"', TRUNCATED_HEADER: str(truncated).lower()}
-    return Response(content=body, media_type=EXPORT_MEDIA_TYPE, headers=headers)
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"', TRUNCATED_HEADER: str(page.truncated).lower()}
+    if page.after is not None and page.after_id is not None:
+        headers["X-Next-After"] = page.after.isoformat()
+        headers["X-Next-Id"] = str(page.after_id)
+    return Response(content=page.body, media_type=EXPORT_MEDIA_TYPE, headers=headers)
 
 
 @router.get("/health")
@@ -546,3 +550,6 @@ def latest_model() -> dict[str, Any]:
 
 # Routes are copied when the router is included, so this must follow every route definition above.
 app.include_router(router)
+app.include_router(beta_router)
+app.include_router(assistant_router)
+app.include_router(text_router)

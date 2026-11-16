@@ -14,7 +14,7 @@ from .domain import (
     StatsPeriod,
 )
 from .errors import ErrorCode, raise_error
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 
 class SiteRepository(DetectionRepository):
@@ -34,7 +34,8 @@ class SiteRepository(DetectionRepository):
                 RETURNING id, nombre, ST_Y(centro::geometry) AS latitude, ST_X(centro::geometry) AS longitude, created_at""",
                 {"owner": owner, "name": site.name, "longitude": site.location.longitude, "latitude": site.location.latitude, "srid": WGS84_SRID},
             ).fetchone()
-        return Site(id=row["id"], name=row["nombre"], latitude=row["latitude"], longitude=row["longitude"], created_at=row["created_at"])
+        found = require_row(row)
+        return Site(id=found["id"], name=found["nombre"], latitude=found["latitude"], longitude=found["longitude"], created_at=found["created_at"])
 
     def rename(self, owner: UUID, site_id: UUID, name: str) -> Site | None:
         with self.transaction(owner) as connection:
@@ -77,14 +78,15 @@ class SiteRepository(DetectionRepository):
                 FROM public.detections WHERE {place} GROUP BY especie""", params).fetchall()
             previous = None
             if since is not None and previous_since is not None:
-                previous = connection.execute(
+                previous = require_row(connection.execute(
                     f"""SELECT count(DISTINCT especie) AS n FROM public.detections
-                    WHERE {place} AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone()["n"]
+                    WHERE {place} AND momento >= %(previous)s AND momento < %(since)s""", params).fetchone())["n"]
         first_seen = {r["especie"]: r["first"] for r in history}
         hourly = [0] * HOURS_PER_DAY
         for row in hours:
             hourly[row["h"]] = row["n"]
         missing = [] if since is None else [r["especie"] for r in sorted(history, key=lambda r: r["last"], reverse=True) if r["last"] < since][:MAX_MISSING_SPECIES]
+        totals = require_row(totals)
         return SiteStats(
             period=period, since=since, until=until, species_count=len(species), previous_species_count=previous,
             detections=totals["n"], active_days=totals["days"], hourly=hourly, missing=missing,

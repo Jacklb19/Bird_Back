@@ -42,7 +42,7 @@ class MemoryWalks:
         self.rows[walk_id] = (owner, stored[1].model_copy(update={"name": name}))
         return self._summary(walk_id)
 
-    def page(self, owner, before, limit):
+    def page(self, owner, before, limit, after_id=None):
         self.last_page = (before, limit)
         return WalkPage(walks=[self._summary(k) for k, (o, _) in self.rows.items() if o == owner], has_more=False)
 

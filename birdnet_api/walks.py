@@ -13,7 +13,7 @@ import psycopg
 from .contracts import Walk, WalkDetail, WalkInput, WalkPage, WalkPath, WalkPathPage, WalkPlace, WalkSpecies
 from .domain import MAX_WALK_PLACES, MAX_WALK_SPECIES, DbDetectionStatus, track_meters
 from .errors import ErrorCode, raise_error
-from .repository import DetectionRepository
+from .repository import DetectionRepository, require_row
 
 # The walk's songs: the owner's detections within its period that a person did not discard.
 WALK_SONGS: Final = "d.user_id = w.user_id AND d.estado <> %(discarded)s AND d.momento BETWEEN w.inicio AND w.fin"
@@ -65,7 +65,7 @@ class WalkRepository(DetectionRepository):
                         distancia_m = %(distance)s WHERE id = %(id)s AND user_id = %(owner)s""", params)
             else:
                 count = connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %(owner)s", params).fetchone()
-                if count["n"] >= quota:
+                if require_row(count)["n"] >= quota:
                     raise_error(ErrorCode.WALK_QUOTA_EXCEEDED)
                 inserted = connection.execute(
                     """INSERT INTO public.walks (id, user_id, nombre, inicio, fin, recorrido, distancia_m)
@@ -83,14 +83,15 @@ class WalkRepository(DetectionRepository):
             updated = connection.execute("UPDATE public.walks SET nombre = %s WHERE id = %s AND user_id = %s", (name, walk_id, owner)).rowcount
             return self._read(connection, owner, walk_id) if updated else None
 
-    def page(self, owner: UUID, before: datetime | None, limit: int) -> WalkPage:
+    def page(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> WalkPage:
         with self.transaction(owner) as connection:
             rows = connection.execute(
                 f"""SELECT {WALK_COLUMNS}
-                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s)
+                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s
+                    OR (w.inicio = %(before)s AND w.id > %(after_id)s::uuid))
                 ORDER BY w.inicio DESC, w.id LIMIT %(fetch)s""",
                 # One extra row tells whether another page follows.
-                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+                self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
         return WalkPage(walks=[_walk(row) for row in rows[:limit]], has_more=len(rows) > limit)
 
     def detail(self, owner: UUID, walk_id: UUID) -> WalkDetail | None:
@@ -107,18 +108,19 @@ class WalkRepository(DetectionRepository):
                 FROM public.walks w JOIN public.detections d ON {WALK_SONGS}
                 WHERE w.id = %(walk)s AND w.user_id = %(owner)s
                 GROUP BY d.especie, latitude, longitude ORDER BY first, d.especie LIMIT %(places)s""", params).fetchall()
-        return WalkDetail(**walk.model_dump(), track=track["recorrido"],
+        return WalkDetail(**walk.model_dump(), track=require_row(track)["recorrido"],
                           places=[WalkPlace(species=r["especie"], latitude=r["latitude"], longitude=r["longitude"], detections=r["n"],
                                             best_confidence=r["best"], first_recorded_at=r["first"]) for r in places])
 
-    def paths(self, owner: UUID, before: datetime | None, limit: int) -> WalkPathPage:
+    def paths(self, owner: UUID, before: datetime | None, limit: int, after_id: UUID | None = None) -> WalkPathPage:
         """Paths and song places of the newest walks, for "Mi mapa" to draw the walks that are only in the account."""
         with self.transaction(owner) as connection:
             rows = connection.execute(
                 """SELECT w.id, w.inicio, w.fin, w.recorrido FROM public.walks w
-                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s)
+                WHERE w.user_id = %(owner)s AND (%(before)s::timestamptz IS NULL OR w.inicio < %(before)s
+                    OR (w.inicio = %(before)s AND w.id > %(after_id)s::uuid))
                 ORDER BY w.inicio DESC, w.id LIMIT %(fetch)s""",
-                self._params(owner, before=before, fetch=limit + 1)).fetchall()
+                self._params(owner, before=before, after_id=after_id, fetch=limit + 1)).fetchall()
             walks = rows[:limit]
             places = connection.execute(
                 f"""SELECT w.id AS walk, d.especie, ST_Y(d.ubicacion::geometry) AS latitude, ST_X(d.ubicacion::geometry) AS longitude,
@@ -145,4 +147,4 @@ class WalkRepository(DetectionRepository):
 
     def usage(self, owner: UUID) -> int:
         with self.transaction(owner) as connection:
-            return connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %s", (owner,)).fetchone()["n"]
+            return require_row(connection.execute("SELECT count(*) AS n FROM public.walks WHERE user_id = %s", (owner,)).fetchone())["n"]

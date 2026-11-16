@@ -44,6 +44,60 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 | `GET /v1/me/walks`, `DELETE /v1/me/walks` | Uso (`walks`, `limit`) y borrado de todas las caminatas propias | Sí |
 | `GET /v1/export?site_id=` o `?walk_id=` | Exportación CSV de un sitio, de una caminata o, sin ninguno de los dos, de todo el registro propio | Sí |
 
+Las páginas CSV llevan `X-Truncated`; si hay más filas, `X-Next-After` y `X-Next-Id` contienen el cursor para `after` y `after_id`. La web reúne todas las páginas con una sola cabecera, conservando notas multilínea. Cada página respeta el máximo de bytes UTF-8, además del máximo de filas. Las listas y recorridos de caminatas continúan con `before` y `after_id` (inicio y UUID del último elemento); `before` solo se conserva para clientes anteriores.
+
+### Diario privado y organización (beta)
+
+Estas rutas requieren sesión y, si la cuenta tiene verificación en dos pasos, `aal2`. La migración nueva es `20261114010000_private_field_journal.sql`; se aplica después de las anteriores. Todas las entidades y sus relaciones son privadas, con RLS y referencias compuestas al mismo dueño. Compartir cantos en el mapa no comparte salidas, observaciones visuales, colecciones ni especies de interés.
+
+| Método y ruta | Propósito |
+|---|---|
+| `GET /v1/outings`, `PUT /v1/outings/{id}`, `GET /v1/outings/{id}`, `DELETE /v1/outings/{id}` | Diario de salidas quietas, caminando o con archivos importados; metadatos, nota privada y referencias opcionales al sitio o recorrido propio |
+| `PUT /v1/outings/{id}/detections/{detection_id}`, `DELETE` sobre la misma ruta | Asociación explícita de una detección propia a una salida; una detección puede pertenecer como máximo a una salida |
+| `GET /v1/outings/{id}/timeline` | Detecciones y observaciones visuales, distinguidas por `kind`; la detección indica si hay una grabación disponible |
+| `GET /v1/observations`, `PUT /v1/observations/{id}`, `GET /v1/observations/{id}`, `DELETE /v1/observations/{id}` | Observaciones visuales manuales del catálogo de especies, con hora, celda opcional, individuos opcionales, nota y salida opcional |
+| `GET /v1/collections`, `PUT /v1/collections/{id}`, `GET /v1/collections/{id}`, `DELETE /v1/collections/{id}` | Colecciones privadas; editar su nombre o nota no reemplaza sus elementos |
+| `PUT /v1/collections/{id}/items/{kind}/{record_id}`, `DELETE` sobre la misma ruta, `GET /v1/collections/{id}/items` | Añadir, quitar y listar detecciones u observaciones propias; un registro puede estar en varias colecciones |
+| `GET /v1/wishlist`, `PUT /v1/wishlist/{species}`, `DELETE /v1/wishlist/{species}` | Lista privada de especies de interés del catálogo de modelos |
+| `GET /v1/deletions` | Marcas mínimas de eliminación para reconciliar la cola local, sin notas ni el contenido borrado |
+
+Los `PUT` de metadatos llevan todos los campos funcionales, incluidos los opcionales como `null`; no son actualizaciones parciales. El UUID lo genera el cliente. Al crear se omite `expected_version` o se envía `null`; al editar se envía la `version` leída. El servidor emite versiones enteras: un reintento con contenido canónico idéntico devuelve la versión actual sin modificarla; un cambio con versión obsoleta responde 409. `DELETE` requiere `?expected_version=` y repetirlo es idempotente. Un UUID borrado no puede resucitar por un reintento pendiente. La cola local conserva los cambios que reciban 409 para que la persona los resuelva.
+
+Las asociaciones y deseos son idempotentes. El cliente debe serializar operaciones sobre una misma relación; operaciones opuestas enviadas por varios dispositivos siguen el orden en que las recibe el servidor. Borrar una salida conserva sus detecciones y observaciones, desvinculando estas últimas; borrar una colección conserva los originales. El borrado de cuenta elimina también estas entidades y sus marcas mínimas.
+
+Las páginas tienen `has_more`, `limit` de 20 por defecto y máximo 50: es un límite de transporte. Listas de metadatos: fecha descendente y UUID ascendente, cursor completo `before` + `after_id`. Línea temporal y elementos de colección: fecha, UUID y `kind` ascendentes, cursor completo `after` + `after_id` + `after_kind`; dos tablas pueden contener el mismo UUID. El ledger usa el mismo cursor triple por fecha de eliminación, UUID y tipo de entidad. Este cursor pagina resultados, no es una secuencia global de confirmaciones; al empezar otra sincronización se reconcilian de nuevo las marcas y no se confía en una marca temporal permanente. La lista de interés continúa con `after_species` alfabético.
+
+Las observaciones manuales llevan `source: "manual"`, sin confianza de modelo. Las fotos permanecen solo en el dispositivo; estas rutas no reciben fotos ni audio. Importar y analizar un archivo ocurre localmente: sincronizar una detección conserva su fecha original y necesita una ubicación redondeada válida, como las detecciones actuales. Los clips elegidos expresamente para la cuenta siguen el flujo privado existente.
+
+### Consulta de bitácora y tutor (beta)
+
+- `POST /v1/assistant/query` acepta una unión cerrada por `intent`: `detections`, `species`, `outings`, `observations`, `collections` o `wishlist`. Ejecuta consultas parametrizadas de solo lectura bajo RLS, devuelve `filters`, `totals`, el array del intent, `has_more` y `usage: null`. Los totales se calculan antes del cursor; no usa Gemini ni cuota. No acepta SQL, texto libre ni historial. No devuelve notas, fotos o coordenadas. `detections` permite `species`, `since`, `until`, `review: "all" | "pending"`; `species` solo agrupa acústicas no descartadas; `outings` filtra por su inicio; `observations` permite además `outing_id`. Las colecciones no llevan filtros adicionales; la lista de interés permite `species`. Los periodos incluyen `since` y excluyen `until`.
+- `POST /v1/assistant/tutor` recibe solo `topic`, `species` opcional e idioma `locale` (`es` o `en`). Los temas son `confidence`, `detection_status`, `recording_privacy`, `approximate_location` y `species_facts`; solo este último requiere una especie del catálogo. El tutor explica conceptos públicos de la aplicación o hechos de GBIF/Wikipedia. Las fuentes las selecciona el servidor y las devuelve con sus licencias; una regla interna sin página pública exacta lleva URL `null`.
+- Las rutas estructuradas anteriores nunca adjuntan texto libre, conversaciones, nombres privados, identificadores, notas, coordenadas, audio, fotos, espectrogramas o resultados de la consulta privada. No identifican especies ni calculan estadísticas con el modelo. El texto de fuentes públicas se trata como datos, no como instrucciones.
+- Usa el modelo y el REST de Gemini ya configurados, de uno a cuatro párrafos y hasta 1200 tokens de salida. El contexto público respeta el límite de transporte de metadatos existente. Comparte las cuotas configuradas por persona y proyecto con fichas e informes, y devuelve cuota si el proveedor no entrega texto utilizable según la política actual. Responde 429 por cuota propia y 503 por configuración o proveedor no disponible; no devuelve un éxito vacío. `usage` contiene los tokens reales informados por el proveedor; un dato ausente o mal formado queda en `null`, sin estimaciones.
+
+### Texto libre con consentimiento (beta)
+
+Las rutas siguientes añaden texto libre sin cambiar los cuerpos de `/assistant/query` ni `/assistant/tutor`. Todas requieren sesión y el segundo factor cuando corresponda.
+
+| Ruta | Cuerpo y respuesta |
+|---|---|
+| `GET /v1/assistant/text-policy` | Manifiesto con `version`, `provider`, `terms_url`, `max_text_characters` y `max_output_tokens`, sin cuota ni proveedor |
+| `POST /v1/assistant/interpret` | `{text, consent, locale?, tz?, limit?}` → `status: ready` con una `query` de los seis tipos actuales para revisar; o `clarification`/`rejected` con `reason_code` cerrado. Incluye modelo, instante y tokens reales, nunca resultados privados |
+| `POST /v1/assistant/tutor-question` | `{topic, species?, locale?, text, consent}` → `status: answered` con `answer` del mismo formato que el tutor estructurado, o `rejected` con código cerrado. Mismos cinco contextos públicos y fuentes del servidor |
+
+Cada petición de texto exige `consent: {version: "assistant-text-v1", accepted: true}`: booleano estricto, aviso vigente y aceptación explícita por acción. La aplicación conserva o retira la aceptación localmente por cuenta y dispositivo, desactivada por defecto; la API no la guarda ni la hereda de otra petición. Retirarla impide nuevos envíos, sin recuperar lo ya enviado al proveedor. El aviso debe explicar que se enviará el texto escrito a Google Gemini, que el servicio gratuito usa entradas y respuestas para mejorar sus productos y puede haber revisión humana. Debe pedir no incluir datos personales, sensibles ni confidenciales: consentir no elimina las restricciones de [los términos del proveedor](https://aistudio.google.com/docs/terms#data-use-unpaid). No se promete anonimización por expresiones regulares ni detección semántica perfecta de información privada.
+
+Solo sale el texto expresamente enviado y el contexto público permitido; nunca se adjuntan notas, resultados, conversaciones, nombres de lugares, UUID, ubicación, audio, fotos o espectrogramas. Lo que la persona escriba sí se envía. No hay envío al teclear, historial automático, almacenamiento del texto en la base ni caché compartida. Los errores y Sentry no conservan el cuerpo, el texto ni los diagnósticos del proveedor. El límite son 1..900 puntos de código Unicode, tras recortar extremos, y el límite configurado de bytes de metadatos. Un surrogate Unicode aislado, campos extra o texto vacío fallan antes de cuota o proveedor.
+
+Interpretar no consulta la bitácora. El modelo devuelve un plan cerrado, la API valida campos y semántica, calcula las fechas localmente y devuelve filtros concretos para confirmar. La persona revisa el plan antes de ejecutar `/assistant/query`; sus páginas siguientes no vuelven a Gemini ni gastan cuota. Las especies deben figurar literalmente como nombres científicos: un nombre común ambiguo pide aclaración, una especie literal fuera del catálogo se rechaza y una especie inventada/no presente invalida la respuesta. No se resuelven referencias privadas ni se permiten escrituras, SQL o filtros fuera de los seis intents.
+
+Los periodos admitidos son todos los datos, fechas de calendario inclusivas para la persona, hoy/ayer, esta o la anterior semana/mes/año, y los últimos 7/30 días. Los periodos de calendario completos se calculan en `tz`, con inicio de semana ISO en lunes y fin exclusivo al empezar el siguiente periodo; los rangos móviles restan días exactos al instante UTC. El modelo no recibe `tz`, IDs, límites de paginación ni los datos de la cuenta. El tutor recibe solo la pregunta y los hechos públicos del tema elegido; puede rechazar preguntas fuera del tema, identificación de especies, estadísticas privadas o información que no esté en sus fuentes. No abre enlaces ni activa búsquedas o herramientas externas. La revisión humana y las fuentes siguen siendo necesarias: validar JSON no demuestra una interpretación semántica perfecta.
+
+Cada acción nueva hace como máximo una llamada al modelo configurado, sin reintentos automáticos, con las cuotas compartidas existentes y hasta 1200 tokens de salida. Una aclaración o rechazo semántico válido consume una unidad porque produjo una decisión utilizable; cancelar un plan ya interpretado tampoco la devuelve. No hay gasto ante consentimiento, autenticación, límites o configuración ausentes. Se devuelve la unidad ante fallo/truncado/bloqueado/salida inválida del modelo o una fuente indisponible según la política actual. La consulta SQL posterior y su paginación consumen cero.
+
+Los errores nuevos de las dos rutas POST llevan `detail` fijo y `code`: `consent_required` (422), `consent_version_changed` (409), `invalid_assistant_request` (422), `model_output_invalid` (503). No incluyen `input`, `ctx` ni eco del texto. Los errores comunes conservan sus estados/formato: autenticación401, segundo factor403, transporte413, cuota propia429, proveedor/configuración503 y fuente pública502. Las rutas anteriores mantienen su contrato de errores. El redactor de informes y sus validaciones permanecen iguales.
+
 ### Ubicación y mapa compartido
 
 - Las coordenadas llegan ya redondeadas a una cuadrícula de 4 decimales (~10 m; `LOCATION_GRID_DECIMALS`); con más decimales la API responde 422 y la base de datos vuelve a redondear por si acaso. Los valores de 3 decimales (~100 m) de clientes y filas anteriores siguen siendo válidos.
@@ -63,7 +117,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ### Revisión y grabaciones
 
 - Confirmar deja la detección como `verified`; corregir, como `corrected` con la especie nueva en `especie` y la del modelo en `especie_modelo`; descartar, como `discarded`. Corregir de vuelta a la especie del modelo equivale a confirmar. `revisada_por` registra quién revisó: hoy, siempre la persona. Reintentar la sincronización tras una corrección no es un conflicto: el lote se compara con la especie del modelo.
-- Las grabaciones son privadas: se suben y se oyen solo con URLs firmadas para su autor, y nunca aparecen en el mapa. El tope por cuenta (`RECORDING_QUOTA_BYTES`) se comprueba al pedir la subida y otra vez al enlazarla. Una subida firmada y aún no enlazada (`recording_uploads`) cuenta como el clip más grande que admite el bucket hasta que se enlaza o se borra, para que subir sin enlazar no llene Storage (ADR-44).
+- Las grabaciones son privadas e inmutables: las autorizaciones se firman con `upsert=false`. El tope (`RECORDING_QUOTA_BYTES`) reserva 100.000 bytes por autorización durante sus dos horas de validez, también después de enlazar o borrar el clip. Así una declaración menor o una URL reutilizada tras el borrado no libera cuota prematuramente. Antes de autorizar nuevas subidas se eliminan los objetos abandonados cuya autorización caducó; solo entonces se libera su reserva. `bytes` es el tamaño enlazado y `allocated_bytes` incluye reservas. Los reintentos enlazan el objeto existente después de verificarlo.
 - El CSV añade al final `model_species` y `reviewed_by`; las descartadas se exportan con su estado y las estadísticas del sitio las excluyen.
 
 ### Fichas e informes del modelo de lenguaje (ADR-37)
@@ -89,6 +143,7 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
   - `settings.py`: configuración leída del entorno una sola vez y validada.
   - `domain.py`: reglas de negocio (umbrales, cuadrícula, límites, estados, periodos, ventana de captura, columnas del CSV); el cliente las replica en `src/config/contract.ts`.
   - `errors.py`: catálogo de errores con su código HTTP y mensaje.
+  - `beta/`: contratos, persistencia y rutas del diario privado, relaciones y organización; `query.py` ejecuta los intents de lectura y `tutor.py` delimita el contexto público del tutor.
   - `manifest.py`: carga del manifiesto del modelo (local o remoto desde los hosts permitidos).
 - `api/index.py`: punto de entrada de la función de Vercel.
 - `supabase/migrations/`: esquema de la base de datos (ejecutar en orden en el SQL Editor de Supabase).
@@ -101,6 +156,8 @@ API de Trino (antes BirdNet Local): FastAPI desplegada como función Python en V
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-dev.txt
+.venv/Scripts/python -m ruff check .
+.venv/Scripts/python -m mypy
 .venv/Scripts/python -m pytest
 ```
 
@@ -141,7 +198,8 @@ Proyecto de Vercel con este repositorio como raíz. Variables necesarias: ver `.
 | `MODEL_RESOURCE_BASE_URL` | Base de `model_file` y `labels_file` relativos | `/models/` |
 | `MAX_METADATA_BODY_BYTES` | Tamaño máximo del cuerpo de un `POST`, `PATCH`, `PUT` o `DELETE` (413 si se supera); como máximo 4 500 000, el límite de Vercel | `131072` |
 | `MAP_RESULT_LIMIT` | Detecciones por respuesta del mapa (`truncated` indica el corte) | `2000` |
-| `EXPORT_ROW_LIMIT` | Filas por exportación CSV (cabecera `X-Truncated` indica el corte) | `20000` |
+| `EXPORT_ROW_LIMIT` | Filas máximas por página CSV | `20000` |
+| `EXPORT_BODY_BYTES` | Bytes UTF-8 máximos por página CSV; entre 16.384 y 4.500.000 | `4000000` |
 | `GEMINI_API_KEY` | Clave de Google AI Studio (plan gratuito, sin facturación) | — (503 al escribir una ficha o un informe) |
 | `GEMINI_MODEL`, `GEMINI_API_URL` | Modelo y dirección de la API de Gemini | `gemini-3.5-flash-lite`, `https://generativelanguage.googleapis.com/v1beta` |
 | `LLM_USER_DAILY_QUOTA`, `LLM_DAILY_QUOTA` | Textos nuevos por persona y en total por día; el total, por debajo del límite diario que muestra AI Studio | `10`, `200` |

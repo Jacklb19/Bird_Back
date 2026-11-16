@@ -20,6 +20,7 @@ from .domain import (
     DbDetectionStatus,
     DbReviewer,
     ReviewAction,
+    visible_status,
 )
 from .errors import ErrorCode, raise_error
 from .session import ASSURANCE_CLAIM, AUTHENTICATED_ROLE, ROLE_CLAIM, SUBJECT_CLAIM, session_assurance
@@ -28,6 +29,13 @@ from .threatened import threatened_species
 
 # Transaction-local setting that Supabase's auth.uid() reads, so RLS policies see the requesting user.
 JWT_CLAIMS_SETTING: Final = "request.jwt.claims"
+
+
+def require_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    """An aggregate or a successful INSERT RETURNING must produce its promised row."""
+    if row is None:
+        raise_error(ErrorCode.DATABASE_UNAVAILABLE)
+    return row
 
 
 class DetectionRepository:
@@ -165,10 +173,11 @@ class DetectionRepository:
                       -- Wide enough to hold any detection whose coarse cell centre may fall inside the area.
                       AND ST_Intersects(d.ubicacion::geometry, ST_Expand(ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer), %(cell)s))
                       AND (%(species)s::text IS NULL OR d.especie = %(species)s)
-                      AND (%(since)s::timestamptz IS NULL OR d.momento >= %(since)s)
-                      AND (%(until)s::timestamptz IS NULL OR d.momento < %(until)s)
                 ) placed
                 WHERE ST_Intersects(shown, ST_MakeEnvelope(%(west)s, %(south)s, %(east)s, %(north)s, %(srid)s::integer))
+                  -- Filtering must use the same precision as the published time, or narrow ranges reveal the original.
+                  AND (%(since)s::timestamptz IS NULL OR momento >= %(since)s)
+                  AND (%(until)s::timestamptz IS NULL OR momento < %(until)s)
                 ORDER BY momento DESC LIMIT %(fetch)s""",
                 {"viewer": viewer, "discarded": DbDetectionStatus.DISCARDED.value, "west": query.west, "south": query.south, "east": query.east,
                  "north": query.north, "srid": WGS84_SRID, "species": query.species, "since": query.since, "until": query.until,
@@ -177,7 +186,7 @@ class DetectionRepository:
                  "fetch": limit + 1},
             ).fetchall()
         detections = [
-            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=DB_TO_API_STATUS[row["estado"]],
+            MapDetection(id=row["id"], species=row["especie"], confidence=row["confianza"], status=visible_status(row["estado"]),
                          recorded_at=row["momento"], latitude=row["latitude"], longitude=row["longitude"], own=row["own"],
                          site_name=row["site_name"], generalized_m=THREATENED_CELL_METERS if row["generalized"] else None)
             for row in rows[:limit]

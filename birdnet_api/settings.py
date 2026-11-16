@@ -28,6 +28,8 @@ DEFAULT_MAX_METADATA_BODY_BYTES: Final = 128 * 1024
 DEFAULT_MAX_MANIFEST_BYTES: Final = 128 * 1024
 DEFAULT_MAP_RESULT_LIMIT: Final = 2000
 DEFAULT_EXPORT_ROW_LIMIT: Final = 20_000
+DEFAULT_EXPORT_BODY_BYTES: Final = 4_000_000
+MIN_EXPORT_BODY_BYTES: Final = 16_384
 # Created by migration 20261008000000_profiles_and_avatars.sql.
 DEFAULT_AVATAR_BUCKET: Final = "avatars"
 # Created by migration 20261011000000_recordings_and_review.sql.
@@ -112,6 +114,7 @@ class Settings:
     max_metadata_body_bytes: int
     map_result_limit: int
     export_row_limit: int
+    export_body_bytes: int
     default_time_zone: str
 
     @classmethod
@@ -161,6 +164,7 @@ class Settings:
             max_metadata_body_bytes=_positive_int(environ, "MAX_METADATA_BODY_BYTES", DEFAULT_MAX_METADATA_BODY_BYTES, PLATFORM_MAX_REQUEST_BODY_BYTES),
             map_result_limit=_positive_int(environ, "MAP_RESULT_LIMIT", DEFAULT_MAP_RESULT_LIMIT),
             export_row_limit=_positive_int(environ, "EXPORT_ROW_LIMIT", DEFAULT_EXPORT_ROW_LIMIT),
+            export_body_bytes=_positive_int(environ, "EXPORT_BODY_BYTES", DEFAULT_EXPORT_BODY_BYTES, PLATFORM_MAX_REQUEST_BODY_BYTES, MIN_EXPORT_BODY_BYTES),
             default_time_zone=_time_zone(environ, "DEFAULT_TIME_ZONE", DEFAULT_TIME_ZONE),
         )
 
@@ -177,7 +181,7 @@ def _text(environ: Mapping[str, str], name: str) -> str | None:
     return value or None
 
 
-def _positive_int(environ: Mapping[str, str], name: str, default: int, maximum: int | None = None) -> int:
+def _positive_int(environ: Mapping[str, str], name: str, default: int, maximum: int | None = None, minimum: int = 1) -> int:
     raw = _text(environ, name)
     if raw is None:
         return default
@@ -187,6 +191,8 @@ def _positive_int(environ: Mapping[str, str], name: str, default: int, maximum: 
         raise SettingsError(f"{name} must be a positive integer, got {raw!r}") from None
     if value <= 0:
         raise SettingsError(f"{name} must be a positive integer, got {raw!r}")
+    if value < minimum:
+        raise SettingsError(f"{name} must be at least {minimum}, got {raw!r}")
     if maximum is not None and value > maximum:
         raise SettingsError(f"{name} must be at most {maximum}, got {raw!r}")
     return value
