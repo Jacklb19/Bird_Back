@@ -1,9 +1,7 @@
-name: Mantener activa la base de datos
+name: Keep the database active
 
-# Supabase pausa los proyectos gratuitos con poca actividad en una semana; su documentación dice que suelen bastar
-# unas pocas consultas a la base al día (riesgo R-09 de la especificación). Cada día se piden a la API desplegada
-# algunas fichas de especie: es una ruta pública que lee la base, así que no hace falta ningún secreto. Si la base
-# no responde, el flujo falla y GitHub avisa por correo a quien lo mantiene.
+# Free Supabase projects can pause after inactivity (risk R-09). Read a few public species cards daily without
+# credentials; a failed database request makes this workflow fail and notifies its maintainer.
 
 on:
   schedule:
@@ -14,17 +12,17 @@ permissions: {}
 
 jobs:
   ping:
-    name: Consultas ligeras a la base
+    name: Lightweight database reads
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
       API_URL: https://bird-back.vercel.app
     steps:
-      - name: Pedir fichas de especie a la API
+      - name: Read species cards from the API
         run: |
           for species in Turdus%20fuscater Zonotrichia%20capensis Colibri%20coruscans; do
             status=$(curl --silent --output /dev/null --write-out '%{http_code}' --retry 3 --retry-delay 10 "$API_URL/v1/species/$species/card?locale=es")
             echo "$species: $status"
-            # 200 (ficha escrita) y 404 (aún no hay) prueban que la base respondió; 503 es una base pausada o caída.
+            # Both a saved card (200) and a missing one (404) prove database access; a paused database returns 503.
             case "$status" in 200|404) ;; *) exit 1 ;; esac
           done

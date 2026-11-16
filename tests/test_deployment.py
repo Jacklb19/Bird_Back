@@ -8,7 +8,7 @@ from birdnet_api.model_species import MODEL_SPECIES_FILE, model_species
 from tests.test_api import api  # noqa: F401 (fixture)
 
 BACKEND = Path(__file__).resolve().parents[1]
-# Versioned files stay under 1 MB (AGENTS.md).
+# Keep the deployment metadata small; model binaries are served separately.
 MAX_VERSIONED_BYTES = 1_000_000
 
 
